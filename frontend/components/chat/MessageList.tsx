@@ -6,6 +6,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { HTMLAttributes, ThHTMLAttributes, TdHTMLAttributes } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { User, Bot } from "lucide-react";
 
@@ -30,6 +33,27 @@ interface MessageListProps {
 
 export function MessageList({ messages, isLoading }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const markdownComponents = {
+    table: (props: HTMLAttributes<HTMLTableElement>) => (
+      <table
+        {...props}
+        className="w-full border-collapse text-sm"
+      />
+    ),
+    thead: (props: HTMLAttributes<HTMLTableSectionElement>) => (
+      <thead {...props} className="bg-muted/40" />
+    ),
+    th: (props: ThHTMLAttributes<HTMLTableCellElement>) => (
+      <th {...props} className="border border-border px-2 py-1 text-left font-medium" />
+    ),
+    td: (props: TdHTMLAttributes<HTMLTableCellElement>) => (
+      <td {...props} className="border border-border px-2 py-1 align-top" />
+    ),
+    p: (props: HTMLAttributes<HTMLParagraphElement>) => (
+      <p {...props} className="text-sm whitespace-pre-wrap break-words" />
+    ),
+  };
 
   useEffect(() => {
     // Auto-scroll to bottom when new messages arrive
@@ -78,9 +102,17 @@ export function MessageList({ messages, isLoading }: MessageListProps) {
                   : "bg-muted"
               )}
             >
-              <p className="text-sm whitespace-pre-wrap break-words">
-                {message.content}
-              </p>
+              {message.role === "assistant" ? (
+                <div className="text-sm break-words">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-sm whitespace-pre-wrap break-words">
+                  {message.content}
+                </p>
+              )}
               
               {message.citations && message.citations.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-border/50">

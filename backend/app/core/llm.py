@@ -1,4 +1,38 @@
 """
+LLM Client Module
+Simple wrapper for OpenAI chat completions.
+"""
+from typing import Optional
+
+from openai import OpenAI
+
+from app.config import settings
+
+_client: Optional[OpenAI] = None
+
+
+def _get_client() -> OpenAI:
+    """Create or return a cached OpenAI client."""
+    global _client
+    if _client is None:
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is not configured")
+        _client = OpenAI(api_key=settings.openai_api_key)
+    return _client
+
+
+def generate_completion(prompt: str) -> str:
+    """Generate a completion using a single prompt template."""
+    client = _get_client()
+    response = client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=1500,
+    )
+    message = response.choices[0].message.content or ""
+    return message.strip()
+"""
 # LLM Module
 
 ## What it does:

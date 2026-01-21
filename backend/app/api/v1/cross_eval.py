@@ -1,28 +1,26 @@
 """
-Chat API Endpoints
-Minimal RAG-based chat endpoint.
+Cross-evaluation API Endpoints
+Generate per-paper answers and return a comparison table.
 """
 from fastapi import APIRouter, HTTPException, Depends
 
 from app.api.dependencies import get_current_user_id
-from app.models.schemas import ChatMessageRequest, ChatResponse
-from app.services.chat_service import send_message
+from app.models.schemas import CrossEvalRequest, CrossEvalResponse
+from app.services.cross_eval_service import cross_evaluate
 
 router = APIRouter()
 
 
-@router.post("/", response_model=ChatResponse)
-async def chat(
-    payload: ChatMessageRequest,
+@router.post("/", response_model=CrossEvalResponse)
+async def cross_eval(
+    payload: CrossEvalRequest,
     user_id: str = Depends(get_current_user_id),
 ):
     if not payload.message or not payload.message.strip():
         raise HTTPException(status_code=400, detail="Message is required")
 
-    return send_message(
+    return cross_evaluate(
         message=payload.message,
         paper_ids=payload.paper_ids,
-        conversation_id=payload.conversation_id,
-        user_id=user_id,
+        top_k=payload.top_k or 5,
     )
-
