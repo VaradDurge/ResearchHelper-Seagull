@@ -90,7 +90,8 @@ class FAISSVectorDB:
         self,
         query_vector: List[float],
         top_k: int = 10,
-        paper_ids: Optional[List[str]] = None
+        paper_ids: Optional[List[str]] = None,
+        user_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Search for similar vectors.
@@ -126,6 +127,9 @@ class FAISSVectorDB:
             
             # Filter by paper_ids if provided
             if paper_ids and metadata.get("paper_id") not in paper_ids:
+                continue
+            # Filter by user_id if provided
+            if user_id and metadata.get("user_id") != user_id:
                 continue
             
             # Convert distance to similarity score (lower distance = higher similarity)
@@ -176,7 +180,18 @@ class FAISSVectorDB:
         else:
             # If all deleted, reinitialize
             self._initialize_index()
-    
+
+    def delete_by_paper_id(self, paper_id: str):
+        """Delete all vectors for a specific paper."""
+        if self.index is None:
+            return
+        faiss_ids_to_remove = [
+            fid for fid, meta in self.metadata.items() if meta.get("paper_id") == paper_id
+        ]
+        for fid in faiss_ids_to_remove:
+            del self.metadata[fid]
+        logger.info(f"Deleted {len(faiss_ids_to_remove)} vectors for paper {paper_id}")
+
     def save_index(self):
         """Save the index and metadata to disk"""
         if not self.index_path:

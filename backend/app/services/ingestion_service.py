@@ -104,6 +104,7 @@ def ingest_pdf(
             metadata_list.append({
                 "paper_id": paper_id,
                 "paper_title": title,
+                "user_id": user_id,
                 "chunk_index": chunk.chunk_index,
                 "page_number": chunk.page_number,
                 "text": chunk.text,

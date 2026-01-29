@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Plus, Settings } from "lucide-react";
 import {
@@ -12,6 +13,13 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 export function Header() {
+  const router = useRouter();
+
+  const handleLogout = () => {
+    localStorage.removeItem("auth_token");
+    router.replace("/chat");
+  };
+
   return (
     <header className="sticky top-0 z-50 flex h-16 items-center justify-between gap-4 border-b bg-background px-6">
       <SidebarTrigger />
@@ -43,7 +51,7 @@ export function Header() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem>Profile</DropdownMenuItem>
-            <DropdownMenuItem>Logout</DropdownMenuItem>
+            <DropdownMenuItem onClick={handleLogout}>Logout</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

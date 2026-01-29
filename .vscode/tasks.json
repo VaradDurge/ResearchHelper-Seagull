@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Backend: Uvicorn",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoExit",
+        "-Command",
+        "$ErrorActionPreference='Stop'; $venvPath=''; if (Test-Path \"$env:WORKSPACE\\backend\\.venv\\Scripts\\Activate.ps1\") { $venvPath=\"$env:WORKSPACE\\backend\\.venv\\Scripts\\Activate.ps1\" } elseif (Test-Path \"$env:WORKSPACE\\backend\\venv\\Scripts\\Activate.ps1\") { $venvPath=\"$env:WORKSPACE\\backend\\venv\\Scripts\\Activate.ps1\" } elseif (Test-Path \"$env:WORKSPACE\\.venv\\Scripts\\Activate.ps1\") { $venvPath=\"$env:WORKSPACE\\.venv\\Scripts\\Activate.ps1\" } elseif (Test-Path \"$env:WORKSPACE\\venv\\Scripts\\Activate.ps1\") { $venvPath=\"$env:WORKSPACE\\venv\\Scripts\\Activate.ps1\" }; if ($venvPath -ne '') { . $venvPath } else { Write-Host 'No venv found. Using system Python.' }; cd \"$env:WORKSPACE\\backend\"; uvicorn app.main:app --reload"
+      ],
+      "options": {
+        "env": {
+          "WORKSPACE": "${workspaceFolder}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend: Next dev",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoExit",
+        "-Command",
+        "cd \"${workspaceFolder}\\frontend\"; npm run dev"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Start Full Stack",
+      "dependsOn": ["Backend: Uvicorn", "Frontend: Next dev"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -23,4 +23,5 @@ async def cross_eval(
         message=payload.message,
         paper_ids=payload.paper_ids,
         top_k=payload.top_k or 5,
+        user_id=user_id,
     )

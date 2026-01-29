@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { MessageInput } from "@/components/chat/MessageInput";
 import { MessageList, type Message } from "@/components/chat/MessageList";
 import { PDFUploader } from "@/components/pdf/PDFUploader";
@@ -10,8 +11,11 @@ import { Button } from "@/components/ui/button";
 import { importDoi, lookupDois } from "@/lib/api/doi";
 import { Loader2, Link as LinkIcon, Download } from "lucide-react";
 import { sendMessage } from "@/lib/api/chat";
+import { getConversation } from "@/lib/api/conversations";
 
 export default function ChatPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [doiDialogOpen, setDoiDialogOpen] = useState(false);
   const [doiEntries, setDoiEntries] = useState<
@@ -30,6 +34,38 @@ export default function ChatPage() {
   const [doiLoading, setDoiLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+
+  // Load conversation from URL param
+  useEffect(() => {
+    const convId = searchParams.get("conversation");
+    if (convId && convId !== conversationId) {
+      setConversationId(convId);
+      loadConversation(convId);
+    } else if (!convId && conversationId) {
+      // New chat - clear messages
+      setMessages([]);
+      setConversationId(null);
+    }
+  }, [searchParams]);
+
+  const loadConversation = async (id: string) => {
+    try {
+      const conv = await getConversation(id);
+      const loadedMessages: Message[] = conv.messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        citations: m.citations,
+        timestamp: new Date(m.created_at),
+      }));
+      setMessages(loadedMessages);
+    } catch {
+      // Conversation not found - start fresh
+      setMessages([]);
+      setConversationId(null);
+    }
+  };
 
   const handleSend = async (message: string) => {
     if (!message.trim()) return;
@@ -45,8 +81,14 @@ export default function ChatPage() {
     setLoading(true);
     
     try {
-      // Call chat API
-      const response = await sendMessage(message);
+      // Call chat API with conversation ID
+      const response = await sendMessage(message, undefined, conversationId || undefined);
+      
+      // Update conversation ID if new
+      if (response.conversation_id && response.conversation_id !== conversationId) {
+        setConversationId(response.conversation_id);
+        router.replace(`/chat?conversation=${response.conversation_id}`, { scroll: false });
+      }
       
       // Add assistant response
       const assistantMessage: Message = {

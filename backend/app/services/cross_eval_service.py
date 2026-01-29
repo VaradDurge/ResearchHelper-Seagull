@@ -10,18 +10,23 @@ from app.core.vector_db import get_vector_db
 from app.models.schemas import CrossEvalResponse, CrossEvalResult
 
 
-def _get_all_paper_ids(vector_db) -> List[str]:
+def _get_all_paper_ids(vector_db, user_id: str | None = None) -> List[str]:
     paper_ids = {
         metadata.get("paper_id")
         for metadata in vector_db.metadata.values()
         if metadata.get("paper_id")
+        and (user_id is None or metadata.get("user_id") == user_id)
     }
     return sorted(paper_ids)
 
 
-def _get_paper_title(vector_db, paper_id: str) -> str:
+def _get_paper_title(vector_db, paper_id: str, user_id: str | None = None) -> str:
     for metadata in vector_db.metadata.values():
-        if metadata.get("paper_id") == paper_id and metadata.get("paper_title"):
+        if (
+            metadata.get("paper_id") == paper_id
+            and (user_id is None or metadata.get("user_id") == user_id)
+            and metadata.get("paper_title")
+        ):
             return metadata["paper_title"]
     return paper_id
 
@@ -53,13 +58,14 @@ def cross_evaluate(
     message: str,
     paper_ids: Optional[List[str]] = None,
     top_k: int = 5,
+    user_id: Optional[str] = None,
 ) -> CrossEvalResponse:
     vector_db = get_vector_db(
         index_path=settings.vector_db_path,
         dimension=settings.embedding_dimension,
     )
 
-    selected_paper_ids = paper_ids or _get_all_paper_ids(vector_db)
+    selected_paper_ids = paper_ids or _get_all_paper_ids(vector_db, user_id=user_id)
     if not selected_paper_ids:
         return CrossEvalResponse(answer=_build_markdown_table([]), citations=[], per_paper=[])
 
@@ -67,10 +73,10 @@ def cross_evaluate(
     all_citations: List[Dict[str, Any]] = []
 
     for paper_id in selected_paper_ids:
-        retrieved = retrieve(message, paper_ids=[paper_id], top_k=top_k)
+        retrieved = retrieve(message, paper_ids=[paper_id], top_k=top_k, user_id=user_id)
         rag_response = generate_answer(message, retrieved)
 
-        paper_title = _get_paper_title(vector_db, paper_id)
+        paper_title = _get_paper_title(vector_db, paper_id, user_id=user_id)
 
         results.append(
             CrossEvalResult(

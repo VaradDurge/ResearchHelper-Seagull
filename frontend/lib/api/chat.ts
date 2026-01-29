@@ -25,6 +25,7 @@ export interface ChatResponse {
   answer: string;
   citations: Citation[];
   retrieved_chunks: any[];
+  conversation_id?: string;
 }
 
 export async function sendMessage(

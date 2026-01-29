@@ -62,6 +62,39 @@ class ChatResponse(BaseModel):
     answer: str
     citations: List[Citation]
     retrieved_chunks: List[Dict[str, Any]]
+    conversation_id: Optional[str] = None
+
+
+# Conversation models
+class MessageRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class Message(BaseModel):
+    id: str
+    role: MessageRole
+    content: str
+    citations: List[Citation] = Field(default_factory=list)
+    created_at: datetime
+
+
+class ConversationResponse(BaseModel):
+    id: str
+    title: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 0
+
+
+class ConversationListResponse(BaseModel):
+    conversations: List[ConversationResponse]
+    total: int
+
+
+class ConversationDetailResponse(ConversationResponse):
+    messages: List[Message] = Field(default_factory=list)
 
 
 class CrossEvalRequest(BaseModel):
@@ -106,3 +139,20 @@ class DoiImportRequest(BaseModel):
 
 class DoiImportResponse(BaseModel):
     paper: PaperResponse
+
+
+class UserResponse(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse

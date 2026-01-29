@@ -14,6 +14,12 @@ from app.models.schemas import PaperResponse, PaperListResponse, PaperStatus
 from app.api.dependencies import get_current_user_id, get_current_workspace_id
 from app.config import settings
 from app.services.ingestion_service import ingest_pdf
+from app.services.papers_service import (
+    save_paper,
+    get_papers_by_user,
+    get_paper_by_id,
+    delete_paper as delete_paper_service,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -78,6 +84,9 @@ async def upload_paper(
             original_filename=file.filename
         )
         
+        # Save paper metadata to MongoDB
+        save_paper(paper_response)
+        
         logger.info(f"Successfully processed PDF for paper {paper_id}")
         return paper_response
         
@@ -96,27 +105,33 @@ async def upload_paper(
 
 
 @router.get("/", response_model=PaperListResponse)
-async def list_papers():
+async def list_papers(user_id: str = Depends(get_current_user_id)):
     """
-    List all papers.
+    List all papers for the current user.
     """
-    # TODO: Implement actual paper listing from database
-    return PaperListResponse(papers=[], total=0)
+    papers = get_papers_by_user(user_id)
+    return PaperListResponse(papers=papers, total=len(papers))
 
 
 @router.get("/{paper_id}", response_model=PaperResponse)
-async def get_paper(paper_id: str):
+async def get_paper(paper_id: str, user_id: str = Depends(get_current_user_id)):
     """
     Get a single paper by ID.
     """
-    # TODO: Implement actual paper retrieval from database
-    raise HTTPException(status_code=404, detail="Paper not found")
+    paper = get_paper_by_id(paper_id, user_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return paper
 
 
 @router.delete("/{paper_id}")
-async def delete_paper(paper_id: str):
+async def delete_paper(paper_id: str, user_id: str = Depends(get_current_user_id)):
     """
     Delete a paper.
     """
-    # TODO: Implement actual paper deletion
+    success = delete_paper_service(paper_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Paper not found")
     return {"message": "Paper deleted successfully"}
+
+

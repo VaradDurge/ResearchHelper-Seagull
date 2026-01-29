@@ -26,14 +26,19 @@ class RAGResponse:
     retrieved_chunks: List[Dict[str, Any]]
 
 
-def retrieve(query: str, paper_ids: Optional[List[str]] = None, top_k: int = 5) -> List[Dict[str, Any]]:
+def retrieve(
+    query: str,
+    paper_ids: Optional[List[str]] = None,
+    top_k: int = 5,
+    user_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Retrieve relevant chunks from the vector database."""
     vector_db = get_vector_db(
         index_path=settings.vector_db_path,
         dimension=settings.embedding_dimension,
     )
     query_vector = generate_embedding(query)
-    return vector_db.search(query_vector, top_k=top_k, paper_ids=paper_ids)
+    return vector_db.search(query_vector, top_k=top_k, paper_ids=paper_ids, user_id=user_id)
 
 
 def build_prompt(query: str, chunks: List[Dict[str, Any]]) -> str:
