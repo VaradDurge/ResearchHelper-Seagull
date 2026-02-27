@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, Plus, MoreHorizontal } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, Users } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,7 +19,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { useWorkspace } from "@/store/workspaceStore";
 
-const MAX_WORKSPACES = 2;
+const MAX_WORKSPACES = 5;
 
 export function WorkspaceDropdown() {
   const {
@@ -28,8 +28,7 @@ export function WorkspaceDropdown() {
     switchWorkspace,
     createWorkspace,
     renameWorkspace,
-  } =
-    useWorkspace();
+  } = useWorkspace();
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [workspaceToRename, setWorkspaceToRename] = useState<string | null>(null);
@@ -101,11 +100,19 @@ export function WorkspaceDropdown() {
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" className="w-full justify-between">
-            <span className="truncate">{activeWorkspace?.name ?? "Loading..."}</span>
-            <ChevronDown className="h-4 w-4" />
+            <span className="flex items-center gap-2 truncate">
+              {activeWorkspace?.is_shared && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-500 dark:text-emerald-400">
+                  <Users className="h-3 w-3" />
+                  Shared
+                </span>
+              )}
+              <span className="truncate">{activeWorkspace?.name ?? "Loading..."}</span>
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-56">
+        <DropdownMenuContent align="start" className="w-64">
           {workspaces.map((ws) => {
             const isActive = ws.id === activeWorkspace?.id;
             return (
@@ -133,6 +140,12 @@ export function WorkspaceDropdown() {
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
                 <span className="truncate flex-1">{ws.name}</span>
+                {ws.is_shared && (
+                  <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-500 dark:text-emerald-400">
+                    <Users className="h-2.5 w-2.5" />
+                    Shared
+                  </span>
+                )}
               </DropdownMenuItem>
             );
           })}

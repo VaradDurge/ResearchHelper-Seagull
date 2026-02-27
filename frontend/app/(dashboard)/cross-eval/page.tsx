@@ -6,11 +6,30 @@ import { MessageList, type Message } from "@/components/chat/MessageList";
 import { PDFUploader } from "@/components/pdf/PDFUploader";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { sendCrossEval } from "@/lib/api/cross-eval";
+import { useWSEvent } from "@/lib/ws/WebSocketProvider";
 
 export default function CrossEvalPage() {
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+
+  useWSEvent("cross_eval_result", (event) => {
+    const p = event.payload;
+    if (!p) return;
+    const userMsg: Message = {
+      id: `ws-ce-user-${Date.now()}`,
+      role: "user",
+      content: p.question,
+      timestamp: new Date(),
+    };
+    const assistantMsg: Message = {
+      id: `ws-ce-asst-${Date.now()}`,
+      role: "assistant",
+      content: p.answer,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+  });
 
   const handleSend = async (message: string) => {
     if (!message.trim()) return;

@@ -98,6 +98,31 @@ def parse_pdf(pdf_path: str) -> PDFData:
     return PDFData(pages=pages, metadata=metadata)
 
 
+def get_abstract_and_conclusion_text(pdf_data: PDFData, conclusion_pages: int = 3) -> str:
+    """
+    Concatenate abstract (from metadata) and conclusion (last N pages) for intelligence extraction.
+    """
+    parts = []
+    if pdf_data.metadata.abstract and pdf_data.metadata.abstract.strip():
+        parts.append(pdf_data.metadata.abstract.strip())
+    if pdf_data.pages:
+        last_pages = pdf_data.pages[-conclusion_pages:] if len(pdf_data.pages) >= conclusion_pages else pdf_data.pages
+        conclusion_text = " ".join(p.text for p in last_pages if p.text.strip())
+        if conclusion_text:
+            parts.append(conclusion_text)
+    return "\n\n".join(parts) if parts else ""
+
+
+def get_full_pdf_text_first_chars(pdf_data: PDFData, max_chars: int = 2000) -> str:
+    """
+    Get the first max_chars of full PDF text (all pages concatenated). Used as fallback when abstract+conclusion is too short.
+    """
+    if not pdf_data.pages:
+        return ""
+    full = " ".join(p.text for p in pdf_data.pages if p.text.strip())
+    return full[:max_chars] if full else ""
+
+
 def extract_metadata(pdf_path: str) -> PDFMetadata:
     """
     Extract only metadata from PDF file.

@@ -13,6 +13,8 @@ import { Loader2, Link as LinkIcon, Download } from "lucide-react";
 import { sendMessage } from "@/lib/api/chat";
 import { getConversation } from "@/lib/api/conversations";
 import { useWorkspace } from "@/store/workspaceStore";
+import { useWSEvent } from "@/lib/ws/WebSocketProvider";
+import { useTypingIndicator } from "@/lib/ws/useTypingIndicator";
 
 export default function ChatPage() {
   const searchParams = useSearchParams();
@@ -37,6 +39,30 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const { typingUsers, onTyping } = useTypingIndicator();
+
+  // Listen for real-time messages from collaborators
+  useWSEvent("new_message", (event) => {
+    const p = event.payload;
+    if (!p) return;
+    const userMsg: Message = {
+      id: `ws-user-${Date.now()}`,
+      role: "user",
+      content: p.message,
+      timestamp: new Date(),
+    };
+    const assistantMsg: Message = {
+      id: `ws-asst-${Date.now()}`,
+      role: "assistant",
+      content: p.answer,
+      citations: p.citations,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    if (p.conversation_id && !conversationId) {
+      setConversationId(p.conversation_id);
+    }
+  });
 
   // Clear chat when workspace changes
   useEffect(() => {
@@ -266,10 +292,16 @@ export default function ChatPage() {
       {/* Floating query dock */}
       <div className="pointer-events-none fixed inset-x-0 bottom-5 z-40 flex justify-center px-4">
         <div className="pointer-events-auto w-full max-w-2xl">
+          {typingUsers.length > 0 && (
+            <p className="mb-2 text-xs text-muted-foreground animate-pulse text-center">
+              A collaborator is typing...
+            </p>
+          )}
           <MessageInput 
             onSend={handleSend}
             onUploadPDF={handleUploadPDF}
             onInputDOI={handleInputDOI}
+            onTyping={onTyping}
             disabled={loading}
             placeholder="Message your papers..."
           />

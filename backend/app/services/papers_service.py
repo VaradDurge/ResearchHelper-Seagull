@@ -1,5 +1,7 @@
 """
 Papers Service - MongoDB storage for paper metadata.
+Supports shared workspace access: queries filter by workspace_id so all
+collaborators see the same papers.
 """
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -30,7 +32,7 @@ def save_paper(paper: PaperResponse) -> PaperResponse:
         "metadata": paper.metadata,
     }
     papers.update_one(
-        {"paper_id": paper.id, "user_id": paper.user_id},
+        {"paper_id": paper.id, "workspace_id": paper.workspace_id},
         {"$set": doc},
         upsert=True,
     )
@@ -38,11 +40,12 @@ def save_paper(paper: PaperResponse) -> PaperResponse:
 
 
 def get_papers_by_user(user_id: str, workspace_id: Optional[str] = None) -> List[PaperResponse]:
-    """Get papers for a user, optionally filtered by workspace."""
+    """Get papers for a workspace (shared) or fallback to user_id."""
     papers = get_papers_collection()
-    query: dict = {"user_id": user_id}
     if workspace_id:
-        query["workspace_id"] = workspace_id
+        query: dict = {"workspace_id": workspace_id}
+    else:
+        query = {"user_id": user_id}
     docs = papers.find(query).sort("upload_date", -1)
     result = []
     for doc in docs:
@@ -67,21 +70,29 @@ def get_papers_by_user(user_id: str, workspace_id: Optional[str] = None) -> List
 
 
 def get_paper_ids_for_workspace(user_id: str, workspace_id: str) -> List[str]:
-    """Return all paper IDs belonging to a workspace."""
+    """Return all paper IDs belonging to a workspace (shared access)."""
     papers = get_papers_collection()
     docs = papers.find(
-        {"user_id": user_id, "workspace_id": workspace_id},
+        {"workspace_id": workspace_id},
         {"paper_id": 1},
     )
     return [doc["paper_id"] for doc in docs]
 
 
 def get_paper_by_id(paper_id: str, user_id: str) -> Optional[PaperResponse]:
-    """Get a single paper by ID."""
+    """Get a single paper by ID. Checks workspace membership for shared access."""
     papers = get_papers_collection()
-    doc = papers.find_one({"paper_id": paper_id, "user_id": user_id})
+    doc = papers.find_one({"paper_id": paper_id})
     if not doc:
         return None
+
+    # Allow access if the user is the uploader or a workspace member
+    from app.services.workspace_service import get_workspace_members
+    ws_id = doc.get("workspace_id", "")
+    members = get_workspace_members(ws_id) if ws_id else []
+    if doc["user_id"] != user_id and user_id not in members:
+        return None
+
     return PaperResponse(
         id=doc["paper_id"],
         title=doc["title"],
@@ -100,16 +111,20 @@ def get_paper_by_id(paper_id: str, user_id: str) -> Optional[PaperResponse]:
 
 
 def delete_paper(paper_id: str, user_id: str) -> bool:
-    """Delete a paper and its vectors."""
+    """Delete a paper and its vectors. Any workspace member can delete."""
     papers = get_papers_collection()
-    doc = papers.find_one({"paper_id": paper_id, "user_id": user_id})
+    doc = papers.find_one({"paper_id": paper_id})
     if not doc:
         return False
 
-    # Delete from MongoDB
-    papers.delete_one({"paper_id": paper_id, "user_id": user_id})
+    from app.services.workspace_service import get_workspace_members
+    ws_id = doc.get("workspace_id", "")
+    members = get_workspace_members(ws_id) if ws_id else []
+    if doc["user_id"] != user_id and user_id not in members:
+        return False
 
-    # Delete PDF file
+    papers.delete_one({"paper_id": paper_id})
+
     pdf_path = doc.get("pdf_path")
     if pdf_path and os.path.exists(pdf_path):
         try:
@@ -117,7 +132,6 @@ def delete_paper(paper_id: str, user_id: str) -> bool:
         except Exception:
             pass
 
-    # Delete vectors from FAISS
     try:
         vector_db = get_vector_db(
             index_path=settings.vector_db_path,
@@ -125,6 +139,12 @@ def delete_paper(paper_id: str, user_id: str) -> bool:
         )
         vector_db.delete_by_paper_id(paper_id)
         vector_db.save_index()
+    except Exception:
+        pass
+
+    try:
+        from app.db.mongo import get_paper_intelligence_collection
+        get_paper_intelligence_collection().delete_many({"paper_id": paper_id})
     except Exception:
         pass
 

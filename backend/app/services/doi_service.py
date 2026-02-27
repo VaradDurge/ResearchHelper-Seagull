@@ -228,6 +228,9 @@ def import_doi(
     original_name = metadata.get("title") or normalized
     original_filename = f"{_safe_filename(original_name)}.pdf"
 
+    paper_metadata = {"doi": normalized}
+    if metadata.get("publication_date"):
+        paper_metadata["publication_date"] = metadata["publication_date"]
     try:
         return ingest_pdf(
             pdf_path=file_path,
@@ -235,6 +238,7 @@ def import_doi(
             workspace_id=workspace_id,
             user_id=user_id,
             original_filename=original_filename,
+            paper_metadata=paper_metadata,
         )
     except Exception as exc:
         if os.path.exists(file_path):

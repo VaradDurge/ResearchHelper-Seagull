@@ -19,3 +19,5 @@
  * - Helper functions for building URLs with params
  */
 
+export const VERIFY_CLAIM = "/api/v1/verify/claim";
+export const VERIFY_RECENT = "/api/v1/verify/recent";

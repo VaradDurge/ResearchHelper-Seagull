@@ -33,15 +33,22 @@ def retrieve(
     query: str,
     paper_ids: Optional[List[str]] = None,
     top_k: int = 5,
+    workspace_id: Optional[str] = None,
     user_id: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """Retrieve relevant chunks from the vector database."""
+    """Retrieve relevant chunks from the vector database, scoped by workspace and/or paper_ids."""
     vector_db = get_vector_db(
         index_path=settings.vector_db_path,
         dimension=settings.embedding_dimension,
     )
     query_vector = generate_embedding(query)
-    return vector_db.search(query_vector, top_k=top_k, paper_ids=paper_ids, user_id=user_id)
+    return vector_db.search(
+        query_vector,
+        top_k=top_k,
+        paper_ids=paper_ids,
+        workspace_id=workspace_id,
+        user_id=user_id,
+    )
 
 
 def build_prompt(query: str, chunks: List[Dict[str, Any]]) -> str:
@@ -160,13 +167,14 @@ def _normalize_question(question: str) -> str:
 
 def list_questions(
     paper_ids: Optional[List[str]] = None,
+    workspace_id: Optional[str] = None,
     user_id: Optional[str] = None,
     max_questions: int = 200,
     max_chunks: int = 2000,
     offset: int = 0,
     limit: int = 100,
 ) -> Tuple[List[str], List[Dict[str, Any]], bool]:
-    """Scan indexed chunks and return extracted questions."""
+    """Scan indexed chunks and return extracted questions, scoped by workspace and/or paper_ids."""
     vector_db = get_vector_db(
         index_path=settings.vector_db_path,
         dimension=settings.embedding_dimension,
@@ -180,8 +188,12 @@ def list_questions(
     stop_early = False
     target_count = max(offset + limit, 0)
 
+    paper_ids_set = set(paper_ids) if paper_ids else None
     for metadata in vector_db.metadata.values():
-        if paper_ids and metadata.get("paper_id") not in paper_ids:
+        if paper_ids_set and metadata.get("paper_id") not in paper_ids_set:
+            continue
+        meta_ws = metadata.get("workspace_id")
+        if workspace_id and meta_ws is not None and meta_ws != workspace_id:
             continue
         if user_id:
             metadata_user_id = metadata.get("user_id")

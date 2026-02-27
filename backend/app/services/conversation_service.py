@@ -1,5 +1,7 @@
 """
 Conversation Service - MongoDB storage for chat history.
+Supports shared workspace access: conversations are scoped to workspace_id
+so all collaborators see the same conversations.
 """
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -48,7 +50,7 @@ def get_or_create_conversation(
     if conversation_id:
         conversations = get_conversations_collection()
         existing = conversations.find_one(
-            {"conversation_id": conversation_id, "user_id": user_id}
+            {"conversation_id": conversation_id, "workspace_id": workspace_id}
         )
         if existing:
             return conversation_id
@@ -83,9 +85,8 @@ def add_message(
     }
     messages.insert_one(doc)
 
-    # Update conversation
     conversations.update_one(
-        {"conversation_id": conversation_id, "user_id": user_id},
+        {"conversation_id": conversation_id},
         {"$set": {"updated_at": now}, "$inc": {"message_count": 1}},
     )
 
@@ -105,23 +106,22 @@ def get_recent_messages(
     messages_col = get_messages_collection()
     docs = (
         messages_col.find(
-            {"conversation_id": conversation_id, "user_id": user_id},
+            {"conversation_id": conversation_id},
             {"role": 1, "content": 1, "_id": 0},
         )
         .sort("created_at", -1)
         .limit(limit)
     )
-    # Reverse so oldest is first (chronological order for the LLM)
     result = list(docs)
     result.reverse()
     return result
 
 
 def get_conversations_by_user(user_id: str, workspace_id: str, limit: int = 50) -> List[ConversationResponse]:
-    """Get conversations for a user within a specific workspace."""
+    """Get conversations for a workspace (shared access)."""
     conversations = get_conversations_collection()
     docs = (
-        conversations.find({"user_id": user_id, "workspace_id": workspace_id})
+        conversations.find({"workspace_id": workspace_id})
         .sort("updated_at", -1)
         .limit(limit)
     )
@@ -144,18 +144,24 @@ def get_conversations_by_user(user_id: str, workspace_id: str, limit: int = 50) 
 def get_conversation_with_messages(
     conversation_id: str, user_id: str
 ) -> Optional[ConversationDetailResponse]:
-    """Get a conversation with all its messages."""
+    """Get a conversation with all its messages (shared access via workspace)."""
     conversations = get_conversations_collection()
     messages_col = get_messages_collection()
 
-    conv = conversations.find_one(
-        {"conversation_id": conversation_id, "user_id": user_id}
-    )
+    conv = conversations.find_one({"conversation_id": conversation_id})
     if not conv:
         return None
 
+    # Verify user has workspace access
+    ws_id = conv.get("workspace_id", "")
+    if ws_id:
+        from app.services.workspace_service import get_workspace_members
+        members = get_workspace_members(ws_id)
+        if user_id not in members:
+            return None
+
     msg_docs = messages_col.find(
-        {"conversation_id": conversation_id, "user_id": user_id}
+        {"conversation_id": conversation_id}
     ).sort("created_at", 1)
 
     messages = []
@@ -188,11 +194,18 @@ def delete_conversation(conversation_id: str, user_id: str) -> bool:
     conversations = get_conversations_collection()
     messages = get_messages_collection()
 
-    result = conversations.delete_one(
-        {"conversation_id": conversation_id, "user_id": user_id}
-    )
-    if result.deleted_count == 0:
+    conv = conversations.find_one({"conversation_id": conversation_id})
+    if not conv:
         return False
 
-    messages.delete_many({"conversation_id": conversation_id, "user_id": user_id})
+    # Check workspace membership for shared access
+    ws_id = conv.get("workspace_id", "")
+    if ws_id:
+        from app.services.workspace_service import get_workspace_members
+        members = get_workspace_members(ws_id)
+        if user_id not in members:
+            return False
+
+    conversations.delete_one({"conversation_id": conversation_id})
+    messages.delete_many({"conversation_id": conversation_id})
     return True

@@ -13,12 +13,31 @@ import {
 } from "@/components/ui/dialog";
 import type { Paper } from "@/types/paper";
 import { useWorkspace } from "@/store/workspaceStore";
+import { useWSEvent } from "@/lib/ws/WebSocketProvider";
+
+const formatDate = (value: string | undefined | null) => {
+  if (!value) return "";
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? value : d.toLocaleDateString();
+};
 
 export default function PDFPage() {
   const { activeWorkspace } = useWorkspace();
   const [papers, setPapers] = useState<Paper[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewingPaper, setViewingPaper] = useState<Paper | null>(null);
+
+  // Real-time: refresh papers when a collaborator adds or deletes one
+  useWSEvent("paper_added", () => {
+    loadPapers();
+  });
+
+  useWSEvent("paper_deleted", (event) => {
+    const paperId = event.payload?.paper_id;
+    if (paperId) {
+      setPapers((prev) => prev.filter((p) => p.id !== paperId));
+    }
+  });
 
   const loadPapers = async () => {
     try {
@@ -104,10 +123,30 @@ export default function PDFPage() {
                       </span>
                     </div>
                   )}
+                  {(paper.publication_date ||
+                    (paper.metadata &&
+                      typeof paper.metadata.publication_date === "string")) && (
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4 w-4" />
+                      <span>
+                        <span className="font-medium text-foreground">
+                          Publish Date:
+                        </span>{" "}
+                        {formatDate(
+                          (paper.metadata &&
+                            (paper.metadata.publication_date as string)) ||
+                            paper.publication_date
+                        )}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <Calendar className="h-4 w-4" />
                     <span>
-                      {new Date(paper.upload_date).toLocaleDateString()}
+                      <span className="font-medium text-foreground">
+                        Upload Date:
+                      </span>{" "}
+                      {formatDate(paper.upload_date)}
                     </span>
                   </div>
                   {paper.metadata?.num_pages && (

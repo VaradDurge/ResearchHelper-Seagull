@@ -5,8 +5,8 @@ import {
   Network, 
   FlaskConical, 
   FileStack, 
-  GitBranch, 
-  BarChart 
+  BarChart,
+  Workflow
 } from "lucide-react";
 
 export type NavItem = {
@@ -23,6 +23,6 @@ export const navItems: NavItem[] = [
   { icon: Network, label: "Blueprint Gen", href: "/blueprint" },
   { icon: FlaskConical, label: "Method Reprod", href: "/method-reprod" },
   { icon: FileStack, label: "Literature Cleanup", href: "/literature" },
-  { icon: GitBranch, label: "Graphs", href: "/graphs" },
+  { icon: Workflow, label: "Graph", href: "/graph" },
   { icon: BarChart, label: "Cross Eval", href: "/cross-eval" },
 ];

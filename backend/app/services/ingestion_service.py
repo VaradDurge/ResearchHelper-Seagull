@@ -14,6 +14,7 @@ from app.core.embeddings import generate_embeddings_batch, get_embedding_dimensi
 from app.core.vector_db import get_vector_db
 from app.config import settings
 from app.models.schemas import PaperResponse, PaperStatus
+from app.verification.metadata_enrichment import enrich_metadata_at_ingestion
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,8 @@ def ingest_pdf(
     paper_id: str,
     workspace_id: str,
     user_id: str,
-    original_filename: str = None
+    original_filename: str = None,
+    paper_metadata: Optional[dict] = None,
 ) -> PaperResponse:
     """
     Main PDF ingestion function.
@@ -101,16 +103,18 @@ def ingest_pdf(
             vector_id = f"{paper_id}_chunk_{chunk.chunk_index}_page_{chunk.page_number}"
             vector_ids.append(vector_id)
             
-            metadata_list.append({
+            chunk_meta = {
                 "paper_id": paper_id,
                 "paper_title": title,
                 "user_id": user_id,
+                "workspace_id": workspace_id,
                 "chunk_index": chunk.chunk_index,
                 "page_number": chunk.page_number,
                 "text": chunk.text,
                 "start_char": chunk.start_char,
                 "end_char": chunk.end_char,
-            })
+            }
+            metadata_list.append(enrich_metadata_at_ingestion(chunk_meta, paper_metadata))
         
         # Upsert vectors to FAISS
         vector_db.upsert_vectors(

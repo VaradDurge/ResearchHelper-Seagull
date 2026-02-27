@@ -66,7 +66,7 @@ def send_message(
 
         questions, citations, truncated = list_questions(
             paper_ids=paper_ids,
-            user_id=user_id,
+            workspace_id=workspace_id,
             max_questions=500,
             max_chunks=800,
             offset=offset,
@@ -104,7 +104,7 @@ def send_message(
             add_message(conv_id, user_id, MessageRole.ASSISTANT, answer, response.citations)
         return response
 
-    retrieved = retrieve(message, paper_ids=paper_ids, top_k=5, user_id=user_id)
+    retrieved = retrieve(message, paper_ids=paper_ids, top_k=5, workspace_id=workspace_id)
     rag_response = generate_answer(message, retrieved, chat_history=chat_history)
 
     # Convert citations

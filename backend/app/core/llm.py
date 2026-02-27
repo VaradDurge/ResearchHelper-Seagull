@@ -43,6 +43,20 @@ def generate_completion(
     )
     message = response.choices[0].message.content or ""
     return message.strip()
+
+
+def generate_completion_json(prompt: str) -> str:
+    """Generate a completion with strict JSON output. Uses response_format so the model returns valid JSON only."""
+    client = _get_client()
+    response = client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=2000,
+        response_format={"type": "json_object"},
+    )
+    message = response.choices[0].message.content or ""
+    return message.strip()
 """
 # LLM Module
 

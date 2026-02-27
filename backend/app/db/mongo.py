@@ -46,3 +46,18 @@ def get_messages_collection():
 def get_workspaces_collection():
     db = get_database()
     return db["workspaces"]
+
+
+def get_invitations_collection():
+    db = get_database()
+    return db["invitations"]
+
+
+def get_claim_verifications_collection():
+    db = get_database()
+    return db["claim_verifications"]
+
+
+def get_paper_intelligence_collection():
+    db = get_database()
+    return db["paper_intelligence"]

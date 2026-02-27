@@ -1,23 +1,68 @@
 /**
  * # Tools API Functions
- * 
- * ## What it does:
- * API functions for all ResearchHelper tools: claim verification, blueprint generation,
- * method reproduction, literature cleanup, graphs, cross evaluation.
- * 
- * ## How it works:
- * - Exports functions for each tool
- * - Uses API client from client.ts
- * - Uses endpoint constants from endpoints.ts
- * - Returns typed responses for each tool
- * 
- * ## What to include:
- * - verifyClaim(claim: string, paperIds: string[]): Promise<VerificationResult>
- * - generateBlueprint(query: string, paperIds?: string[]): Promise<Blueprint>
- * - extractMethod(paperId: string): Promise<MethodDetails>
- * - cleanupLiterature(paperIds: string[], options: CleanupOptions): Promise<GroupedPapers>
- * - generateGraph(paperIds: string[], options: GraphOptions): Promise<GraphData>
- * - crossEvaluate(query: string, llmProviders: string[], paperIds: string[]): Promise<EvaluationResult>
- * - TypeScript types for each tool's request/response
+ * Claim verification and other tools.
  */
+import { apiClient } from "./client";
+import { VERIFY_CLAIM, VERIFY_RECENT } from "./endpoints";
 
+export interface ClaimVerifyRequest {
+  claim: string;
+  paper_ids?: string[] | null;
+}
+
+export interface ScoredEvidenceItem {
+  evidence_score: number;
+  classification: { classification: string; confidence: number; reason: string };
+  similarity_score: number;
+  paper_id: string;
+  paper_title: string;
+  page_number: number;
+  chunk_index: number;
+  text: string;
+  score_components?: Record<string, number>;
+}
+
+export interface ClaimVerifyResponse {
+  claim: string;
+  support_count: number;
+  contradict_count: number;
+  neutral_count: number;
+  evidence_count: number;
+  confidence_score: number;
+  confidence_label: string;
+  evidence_strength: string;
+  strongest_study_types: string[];
+  guardrail_triggered: string | null;
+  scored_evidence: ScoredEvidenceItem[];
+}
+
+export interface ClaimVerifyRunItem {
+  run_id: string;
+  user_id: string;
+  user_name: string;
+  claim: string;
+  result: ClaimVerifyResponse;
+  created_at: string;
+}
+
+export interface ClaimVerifyRecentResponse {
+  runs: ClaimVerifyRunItem[];
+  total: number;
+}
+
+export async function verifyClaim(
+  claim: string,
+  paperIds?: string[] | null
+): Promise<ClaimVerifyResponse> {
+  const response = await apiClient.post<ClaimVerifyResponse>(VERIFY_CLAIM, {
+    claim,
+    paper_ids: paperIds ?? null,
+  });
+  return response.data;
+}
+
+export async function getRecentVerifications(limit?: number): Promise<ClaimVerifyRecentResponse> {
+  const params = limit != null ? { limit } : {};
+  const response = await apiClient.get<ClaimVerifyRecentResponse>(VERIFY_RECENT, { params });
+  return response.data;
+}

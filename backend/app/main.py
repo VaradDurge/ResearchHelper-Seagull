@@ -1,5 +1,5 @@
 """
-FastAPI Application Entry Point
+FastAPI Application Entry Point - Seagull Research Platform
 """
 from contextlib import asynccontextmanager
 import logging
@@ -10,7 +10,9 @@ from app.config import settings
 from app.api.v1.router import api_router
 import os
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 os.makedirs(settings.upload_dir, exist_ok=True)
 
@@ -118,8 +120,20 @@ def _rebuild_faiss_index(vector_db):
     print(f"[FAISS] Rebuild complete: {len(papers)} papers, {total_chunks} chunks.")
 
 
+def _validate_openai_api_key():
+    """Raise at startup if OPENAI_API_KEY is not set (required for LLM extraction and optional embeddings)."""
+    key = os.getenv("OPENAI_API_KEY")
+    if not key or not str(key).strip():
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Set it in the environment or in a .env file in the project root. "
+            "Example: OPENAI_API_KEY=sk-your-key-here"
+        )
+    logger.info("OPENAI_API_KEY is set (length=%s).", len(str(key).strip()))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _validate_openai_api_key()
     _verify_and_rebuild_faiss()
     yield
 

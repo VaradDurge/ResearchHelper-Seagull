@@ -45,6 +45,7 @@ def get_current_workspace_id(
     """
     Resolve the active workspace ID from the X-Workspace-Id header.
     Falls back to the user's active workspace stored in the database.
+    Supports both owned and collaborated workspaces.
     """
     from app.services.workspace_service import get_active_workspace, get_workspace_by_id
 

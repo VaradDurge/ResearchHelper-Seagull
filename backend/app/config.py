@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     
     # Auth
     google_client_id: str = ""
+
+    # Collaboration / Email
+    resend_api_key: str = ""
+    frontend_url: str = "http://localhost:3000"
     
     # CORS
     allowed_origins: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -41,6 +45,10 @@ class Settings(BaseSettings):
     # LLM
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = "gpt-4o-mini"
+
+    # Paper-level embedding for intelligence graph (optional: "openai" | "local")
+    paper_embedding_provider: str = "local"
+    openai_embedding_model: str = "text-embedding-3-small"
 
     # Chunking
     chunk_size: int = 1000

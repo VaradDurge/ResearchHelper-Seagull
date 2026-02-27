@@ -11,6 +11,7 @@ interface MessageInputProps {
   onSend?: (message: string) => void;
   onUploadPDF?: () => void;
   onInputDOI?: () => void;
+  onTyping?: () => void;
   disabled?: boolean;
   placeholder?: string;
 }
@@ -19,6 +20,7 @@ export function MessageInput({
   onSend,
   onUploadPDF,
   onInputDOI,
+  onTyping,
   disabled = false,
   placeholder = "Input Query",
 }: MessageInputProps) {
@@ -105,7 +107,10 @@ export function MessageInput({
         <Textarea
           ref={textareaRef}
           value={message}
-          onChange={(e) => setMessage(e.target.value)}
+          onChange={(e) => {
+            setMessage(e.target.value);
+            onTyping?.();
+          }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={disabled}

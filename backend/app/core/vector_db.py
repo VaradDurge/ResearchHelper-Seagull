@@ -91,65 +91,70 @@ class FAISSVectorDB:
         query_vector: List[float],
         top_k: int = 10,
         paper_ids: Optional[List[str]] = None,
+        workspace_id: Optional[str] = None,
         user_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Search for similar vectors.
-        
+        Search for similar vectors. Scope by paper_ids and/or workspace_id.
+
         Args:
             query_vector: Query embedding vector
             top_k: Number of results to return
             paper_ids: Optional list of paper IDs to filter by
-            
+            workspace_id: Optional workspace ID - only return chunks from this workspace
+            user_id: Optional (legacy) - prefer workspace_id for multi-tenant isolation
+
         Returns:
             List of search results with id, score, and metadata
         """
         if self.index is None or self.index.ntotal == 0:
             return []
-        
-        needs_filtering = bool(paper_ids) or bool(user_id)
-        
+
+        needs_filtering = bool(paper_ids) or bool(workspace_id) or bool(user_id)
+
         # Convert query to numpy array
         query_array = np.array([query_vector], dtype=np.float32)
-        
-        # When filtering is needed, fetch many more candidates so we have
-        # enough results left after removing non-matching entries.
+
         candidate_multiplier = 20 if needs_filtering else 1
         k = min(top_k * candidate_multiplier, self.index.ntotal)
         distances, indices = self.index.search(query_array, k)
-        
+
         paper_ids_set = set(paper_ids) if paper_ids else None
-        
+
         results = []
         for distance, idx in zip(distances[0], indices[0]):
             if idx == -1:
                 continue
-            
+
             faiss_id = str(idx)
             if faiss_id not in self.metadata:
                 continue
-            
+
             metadata = self.metadata[faiss_id].copy()
-            
+
             if paper_ids_set and metadata.get("paper_id") not in paper_ids_set:
+                continue
+            # Scope by workspace when present in metadata (new index); legacy chunks have no workspace_id
+            meta_ws = metadata.get("workspace_id")
+            if workspace_id and meta_ws is not None and meta_ws != workspace_id:
                 continue
             if user_id:
                 metadata_user_id = metadata.get("user_id")
                 if metadata_user_id and metadata_user_id != user_id:
                     continue
-            
+
             similarity = 1.0 / (1.0 + float(distance))
-            
+
             results.append({
                 "id": metadata.get("vector_id", faiss_id),
                 "score": similarity,
                 "distance": float(distance),
                 "metadata": metadata
             })
-            
+
             if len(results) >= top_k:
                 break
-        
+
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
     
@@ -197,6 +202,38 @@ class FAISSVectorDB:
         for fid in faiss_ids_to_remove:
             del self.metadata[fid]
         logger.info(f"Deleted {len(faiss_ids_to_remove)} vectors for paper {paper_id}")
+
+    def get_paper_centroids(
+        self, workspace_id: Optional[str] = None, paper_ids: Optional[List[str]] = None
+    ) -> Dict[str, np.ndarray]:
+        """
+        Get mean (centroid) embedding per paper for graph similarity.
+        Only includes papers in workspace_id and/or paper_ids if provided.
+        """
+        if self.index is None or self.index.ntotal == 0:
+            return {}
+        paper_vectors: Dict[str, List[np.ndarray]] = {}
+        for faiss_id, meta in self.metadata.items():
+            pid = meta.get("paper_id")
+            if not pid:
+                continue
+            if workspace_id is not None and meta.get("workspace_id") != workspace_id:
+                continue
+            if paper_ids is not None and pid not in paper_ids:
+                continue
+            try:
+                idx = int(faiss_id)
+                vec = self.index.reconstruct(idx)
+                if pid not in paper_vectors:
+                    paper_vectors[pid] = []
+                paper_vectors[pid].append(vec)
+            except Exception:
+                continue
+        centroids = {}
+        for pid, vecs in paper_vectors.items():
+            if vecs:
+                centroids[pid] = np.array(vecs, dtype=np.float32).mean(axis=0)
+        return centroids
 
     def save_index(self):
         """Save the index and metadata to disk"""

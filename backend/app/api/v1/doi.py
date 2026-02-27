@@ -1,5 +1,5 @@
 """
-DOI lookup API Endpoints
+DOI lookup API Endpoints with real-time broadcast.
 """
 from fastapi import APIRouter, HTTPException, Depends
 
@@ -7,6 +7,7 @@ from app.api.dependencies import get_current_user_id, get_current_workspace_id
 from app.models.schemas import DoiLookupRequest, DoiLookupResponse, DoiImportRequest, DoiImportResponse
 from app.services.doi_service import lookup_dois, import_doi
 from app.services.papers_service import save_paper
+from app.core.ws_manager import manager
 
 router = APIRouter()
 
@@ -33,6 +34,20 @@ async def import_doi_endpoint(
     try:
         paper = import_doi(payload.doi, workspace_id=workspace_id, user_id=user_id)
         save_paper(paper)
+
+        await manager.broadcast(
+            workspace_id,
+            {
+                "type": "paper_added",
+                "payload": {
+                    "paper_id": paper.id,
+                    "title": paper.title,
+                    "user_id": user_id,
+                },
+            },
+            exclude_user=user_id,
+        )
+
         return DoiImportResponse(paper=paper)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

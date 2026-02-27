@@ -1,0 +1,16 @@
+# Seagull — ensure OPENAI_API_KEY is available in the backend container.
+# 1. Create .env in project root (same folder as this file) with:
+#      OPENAI_API_KEY=sk-your-key-here
+# 2. .env is in .gitignore — do not commit it.
+# 3. Add the env_file and environment section below to your backend service.
+
+services:
+  backend:
+    # Your existing build/image and other settings go here.
+    env_file:
+      - .env
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    # Example: ports, volumes, etc.
+    # ports:
+    #   - "8000:8000"
