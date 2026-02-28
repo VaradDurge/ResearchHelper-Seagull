@@ -17,18 +17,18 @@ const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false 
 
 // Obsidian-like dark background and graph colors
 const BG = "#1f2024";
-// Paper/title nodes: beige #DFD0B8 with lighter hover/selected variants
-const NODE_DEFAULT = "rgba(223, 208, 184, 0.95)"; // #DFD0B8
+// Paper/title nodes: beige #DFD0B8, fully opaque
+const NODE_DEFAULT = "rgba(223, 208, 184, 1)"; // #DFD0B8
 const NODE_HOVER = "rgba(240, 228, 205, 1)";
 const NODE_SELECTED = "rgba(255, 245, 220, 1)";
 const NODE_FADED = "rgba(223, 208, 184, 0.15)";
-const EDGE_OPACITY_DEFAULT = 0.55;
+const EDGE_OPACITY_DEFAULT = 0.14;
 const EDGE_OPACITY_HIGHLIGHT = 0.95;
-// Soft grey edges similar to Obsidian’s graph view
-const LINK_CITATION = "rgba(180, 180, 180, 1)";
-const LINK_SIMILARITY = "rgba(180, 180, 180, 1)";
-const LINK_YEAR = "rgba(180, 180, 180, 1)";
-const LINK_HIGHLIGHT = "rgba(230, 230, 230, 1)";
+// Edge colors – all links rendered as #7E7474
+const LINK_CITATION = "#7E7474";
+const LINK_SIMILARITY = "#7E7474";
+const LINK_YEAR = "#7E7474";
+const LINK_HIGHLIGHT = "#7E7474";
 const CLUSTER_COLORS = [
   "rgba(100, 160, 255, 0.5)",
   "rgba(160, 100, 255, 0.5)",
@@ -37,6 +37,9 @@ const CLUSTER_COLORS = [
   "rgba(220, 180, 100, 0.5)",
   "rgba(180, 100, 220, 0.5)",
 ];
+
+// Debug flag so we only log once from the custom link renderer
+let _loggedCustomLinkRenderer = false;
 
 const BASE_NODE_R = 3;
 const CITATION_THRESHOLD = 2;
@@ -127,6 +130,17 @@ export default function GraphPage() {
   const useIntelligence = Boolean(
     intelligenceData?.has_intelligence && intelligenceData?.nodes?.length > 0
   );
+
+  // Debug: which graph mode is active
+  useEffect(() => {
+    if (useIntelligence) {
+      // eslint-disable-next-line no-console
+      console.log("INTELLIGENCE GRAPH ACTIVE");
+    } else {
+      // eslint-disable-next-line no-console
+      console.log("SIMPLE GRAPH ACTIVE");
+    }
+  }, [useIntelligence]);
 
   const { nodes: enrichedNodes, links: denseLinks } = useMemo(() => {
     if (!rawData || !rawData.nodes.length) return { nodes: [], links: [] };
@@ -472,250 +486,76 @@ export default function GraphPage() {
     [hoverNode?.id, selectedNode?.id, nodeOpacity, showClusters, useIntelligence]
   );
 
-  const nodeRadius = useCallback((node: NodeWithMeta | (IntelligenceGraphNode & { degree?: number })) => {
-    const d = node.degree ?? 0;
-    if (useIntelligence && "type" in node) {
-      const t = (node as IntelligenceGraphNode).type;
-      if (t === "method") return 3.5;
-      if (t === "dataset") return 3;
-      if (t === "concept") return 2.5;
-      return 5 + Math.floor(d / 3) * 1;
-    }
-    const steps = Math.floor(d / 3);
-    let r = BASE_NODE_R + steps * 2;
-    if ((node as NodeWithMeta).citationCount != null && (node as NodeWithMeta).citationCount! > CITATION_THRESHOLD) r += 3;
-    return Math.min(r, 12);
-  }, [useIntelligence]);
+  const NODE_RADIUS_DEFAULT = 3;
+  const NODE_RADIUS_PAPER = 6;
 
+  /** Visual radius by type: paper nodes slightly larger; method/dataset/concept use default. */
+  const getNodeRadius = useCallback((node: any) => {
+    return node?.type === "paper" ? NODE_RADIUS_PAPER : NODE_RADIUS_DEFAULT;
+  }, []);
+
+  // Pointer hit-testing radius (matches drawNode circle).
+  const nodeRadius = useCallback((node: any) => getNodeRadius(node), [getNodeRadius]);
+
+  const lastScaleLogRef = useRef<number | null>(null);
+
+  // Custom node renderer: circle + Obsidian-style label below (all node types).
+  // Label uses library globalScale (3rd param) for zoom-stable visual size.
   const drawNode = useCallback(
-    (node: NodeWithMeta | (IntelligenceGraphNode & { x?: number; y?: number; degree?: number }), ctx: CanvasRenderingContext2D) => {
-      const x = (node as { x?: number }).x;
-      const y = (node as { y?: number }).y;
+    (node: any, ctx: CanvasRenderingContext2D, globalScale?: number) => {
+      const x = node?.x;
+      const y = node?.y;
       if (x == null || y == null) return;
+
+      const size = getNodeRadius(node);
+      const scale = Math.max(0.001, globalScale ?? 1);
+      // Temporary debug: confirm globalScale changes when zooming (log once per distinct value).
+      if (lastScaleLogRef.current !== scale) {
+        lastScaleLogRef.current = scale;
+        // eslint-disable-next-line no-console
+        console.log("Zoom scale (globalScale):", scale);
+      }
+      const labelText =
+        node.label ?? node.name ?? node.title ?? node.id ?? "";
+
       ctx.save();
-      const r = nodeRadius(node);
-      const color = nodeColor(node);
-      const isHighlight = hoverNode?.id === node.id || selectedNode?.id === node.id;
 
-      // In intelligence graph, treat as paper if type is "paper" or if node has paper-like fields (fallback for API quirks)
-      const nodeType = (node as IntelligenceGraphNode).type;
-      const isPaperIntelligence =
-        useIntelligence &&
-        (nodeType === "paper" ||
-          (nodeType !== "method" &&
-            nodeType !== "dataset" &&
-            nodeType !== "concept" &&
-            Boolean((node as IntelligenceGraphNode).label)));
-      const paperNode = isPaperIntelligence ? (node as IntelligenceGraphNode) : null;
-      const hasUniqueConcept = paperNode && paperHasUniqueConcept.has(paperNode.id);
+      // 1) Draw node circle (no zoom scaling)
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, 2 * Math.PI);
+      ctx.fillStyle = "#7077A1";
+      ctx.fill();
 
-      if (useIntelligence && "is_research_gap" in node && (node as IntelligenceGraphNode).is_research_gap && !isHighlight) {
-        ctx.beginPath();
-        ctx.arc(x, y, r + 12, 0, 2 * Math.PI);
-        ctx.fillStyle = "rgba(220, 80, 80, 0.15)";
-        ctx.fill();
-        ctx.strokeStyle = "rgba(220, 80, 80, 0.4)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-      if (showClusters && "clusterId" in node && node.clusterId != null && !isHighlight) {
-        const halo = CLUSTER_COLORS[node.clusterId % CLUSTER_COLORS.length];
-        ctx.beginPath();
-        ctx.arc(x, y, r + 14, 0, 2 * Math.PI);
-        ctx.fillStyle = halo.replace("0.5)", "0.12)");
-        ctx.fill();
-      }
+      // 2) Label below node: inverse scale so text stays visually stable
+      if (labelText) {
+        const baseFontSize = 6;
+        let fontSize = baseFontSize / scale;
+        fontSize = Math.max(3, Math.min(fontSize, 10));
 
-      if (isPaperIntelligence && paperNode) {
-        // --- Paper intelligence capsule (visual only; no extra graph nodes) ---
-        canvasTransformRef.current = ctx.getTransform();
-        const methods = paperNode.methods_used ?? [];
-        const datasets = paperNode.datasets_used ?? [];
-        const arcR = r * 0.65;
-        const miniR = 3;
-        const maxDots = 5;
-        const methodPositions: [number, number][] = [];
-        const datasetPositions: [number, number][] = [];
-
-        // Research gap: subtle inner red glow (do not change base paper color)
-        if (hasUniqueConcept && !isHighlight) {
-          const gradient = ctx.createRadialGradient(x, y, 0, x, y, r);
-          gradient.addColorStop(0, "rgba(220, 80, 80, 0.25)");
-          gradient.addColorStop(0.7, "rgba(220, 80, 80, 0.08)");
-          gradient.addColorStop(1, "rgba(220, 80, 80, 0)");
-          ctx.beginPath();
-          ctx.arc(x, y, r, 0, 2 * Math.PI);
-          ctx.fillStyle = gradient;
-          ctx.fill();
-        }
-
-        ctx.shadowColor = "rgba(0,0,0,0.4)";
-        ctx.shadowBlur = 4;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, 2 * Math.PI);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        if (isHighlight) {
-          ctx.beginPath();
-          ctx.arc(x, y, r + 4, 0, 2 * Math.PI);
-          ctx.strokeStyle = "rgba(150, 200, 255, 0.8)";
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
-
-        // Small red dot near title for research gap
-        if (hasUniqueConcept) {
-          ctx.beginPath();
-          ctx.arc(x + r * 0.5, y - r * 0.35, 3, 0, 2 * Math.PI);
-          ctx.fillStyle = "rgba(220, 80, 80, 0.95)";
-          ctx.fill();
-        }
-
-        // Title: centered, 2 lines max, smaller font
-        const title = (paperNode.label || "").trim();
-        if (title) {
-          ctx.save();
-          ctx.font = "9px sans-serif";
-          ctx.fillStyle = "rgba(255,255,255,0.95)";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          const maxWidth = Math.max(20, r * 1.6);
-          const lineHeight = 10;
-          const words = title.split(/\s+/);
-          const lines: string[] = [];
-          let current = "";
-          for (const w of words) {
-            const test = current ? `${current} ${w}` : w;
-            const m = ctx.measureText(test);
-            if (m.width <= maxWidth) current = test;
-            else {
-              if (current) lines.push(current);
-              current = ctx.measureText(w).width <= maxWidth ? w : w.slice(0, Math.ceil(maxWidth / 5));
-            }
-          }
-          if (current) lines.push(current);
-          const drawn = lines.slice(0, 2);
-          const startY = y - (drawn.length - 1) * (lineHeight / 2);
-          drawn.forEach((line, i) => {
-            ctx.fillText(line, x, startY + i * lineHeight);
-          });
-          ctx.restore();
-        }
-
-        // Bottom arc: teal method indicators (max 5, then "+X")
-        const methodCount = Math.min(methods.length, maxDots);
-        const methodStartAngle = Math.PI * 0.6;
-        const methodEndAngle = Math.PI * 0.9;
-        for (let i = 0; i < methodCount; i++) {
-          const t = methodCount === 1 ? 0.5 : i / (methodCount - 1);
-          const angle = methodStartAngle + t * (methodEndAngle - methodStartAngle);
-          const px = x + arcR * Math.cos(angle);
-          const py = y + arcR * Math.sin(angle);
-          methodPositions.push([px, py]);
-          ctx.beginPath();
-          ctx.arc(px, py, miniR, 0, 2 * Math.PI);
-          ctx.fillStyle = "#1abc9c";
-          ctx.fill();
-        }
-        if (methods.length > maxDots) {
-          const badgeAngle = methodEndAngle + 0.08;
-          const px = x + arcR * Math.cos(badgeAngle);
-          const py = y + arcR * Math.sin(badgeAngle);
-          ctx.font = "8px sans-serif";
-          ctx.fillStyle = "#1abc9c";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(`+${methods.length - maxDots}`, px, py);
-        }
-
-        // Right arc: yellow dataset indicators
-        const datasetCount = Math.min(datasets.length, maxDots);
-        const datasetStartAngle = -Math.PI * 0.25;
-        const datasetEndAngle = Math.PI * 0.25;
-        for (let i = 0; i < datasetCount; i++) {
-          const t = datasetCount === 1 ? 0.5 : i / (datasetCount - 1);
-          const angle = datasetStartAngle + t * (datasetEndAngle - datasetStartAngle);
-          const px = x + arcR * Math.cos(angle);
-          const py = y + arcR * Math.sin(angle);
-          datasetPositions.push([px, py]);
-          ctx.beginPath();
-          ctx.arc(px, py, miniR, 0, 2 * Math.PI);
-          ctx.fillStyle = "#f1c40f";
-          ctx.fill();
-        }
-        if (datasets.length > maxDots) {
-          const badgeAngle = datasetEndAngle + 0.08;
-          const px = x + arcR * Math.cos(badgeAngle);
-          const py = y + arcR * Math.sin(badgeAngle);
-          ctx.font = "8px sans-serif";
-          ctx.fillStyle = "#f1c40f";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(`+${datasets.length - maxDots}`, px, py);
-        }
-
-        nodeMiniCircleRef.current.set(node.id, { method: methodPositions, dataset: datasetPositions });
-      } else {
-        // Non-paper or simple graph: original circle drawing
-        ctx.shadowColor = "rgba(0,0,0,0.4)";
-        ctx.shadowBlur = 4;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, 2 * Math.PI);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        if (isHighlight) {
-          ctx.beginPath();
-          ctx.arc(x, y, r + 4, 0, 2 * Math.PI);
-          ctx.strokeStyle = "rgba(150, 200, 255, 0.8)";
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
-        if (useIntelligence && "is_research_gap" in node && (node as IntelligenceGraphNode).is_research_gap) {
-          ctx.font = "10px sans-serif";
-          ctx.fillStyle = "rgba(220, 80, 80, 0.9)";
-          ctx.fillText("1", x + r - 4, y - r + 4);
-        }
-      }
-
-      // Draw label just below each node (Obsidian-style) for quick reading.
-      const rawLabel = ((node as unknown as { label?: string }).label || "").trim();
-      if (rawLabel) {
-        ctx.save();
-        ctx.font = "10px sans-serif";
-        ctx.fillStyle = "rgba(235, 235, 235, 0.9)";
+        ctx.font = `${fontSize}px Inter, sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        const maxWidth = 160;
-        let text = rawLabel;
-        // Truncate with ellipsis if too wide
-        while (ctx.measureText(text).width > maxWidth && text.length > 4) {
-          text = text.slice(0, -4) + "…";
-        }
-        ctx.fillText(text, x, y + r + 6);
-        ctx.restore();
+        ctx.fillStyle = "rgba(223, 208, 184, 0.85)";
+
+        const maxLength = 30;
+        const displayLabel =
+          String(labelText).length > maxLength
+            ? String(labelText).substring(0, maxLength) + "..."
+            : String(labelText);
+        ctx.fillText(displayLabel, x, y + size + 4);
       }
 
       ctx.restore();
     },
-    [nodeColor, nodeRadius, hoverNode?.id, selectedNode?.id, showClusters, useIntelligence, paperHasUniqueConcept]
+    [getNodeRadius]
   );
 
   const linkOpacity = useCallback(
-    (link: EnrichedLink | IntelligenceGraphLink) => {
-      if (!highlightSet) return EDGE_OPACITY_DEFAULT;
-      const a = typeof link.source === "string" ? link.source : (link.source as { id?: string })?.id;
-      const b = typeof link.target === "string" ? link.target : (link.target as { id?: string })?.id;
-      return a != null && b != null && highlightSet.has(a) && highlightSet.has(b)
-        ? EDGE_OPACITY_HIGHLIGHT
-        : useIntelligence && link.type === "contradiction"
-          ? 0.8
-          : EDGE_OPACITY_DEFAULT * 0.6;
+    (_link: EnrichedLink | IntelligenceGraphLink) => {
+      // For debugging link color, keep links fully opaque (pure white).
+      return EDGE_OPACITY_DEFAULT;
     },
-    [highlightSet, useIntelligence]
+    []
   );
 
   const linkWidthByWeight = useCallback((link: EnrichedLink | IntelligenceGraphLink) => {
@@ -724,29 +564,13 @@ export default function GraphPage() {
     return 1.6;
   }, [useIntelligence]);
 
-  const linkWidth = useCallback(
-    (link: EnrichedLink | IntelligenceGraphLink) => {
-      const base = linkWidthByWeight(link);
-      const opacity = linkOpacity(link);
-      return opacity >= 0.8 ? base * 1.3 : base;
-    },
-    [linkOpacity, linkWidthByWeight]
-  );
-
-  const linkColor = useCallback(
-    (link: EnrichedLink | IntelligenceGraphLink) => {
-      if (useIntelligence && link.type === "contradiction") {
-        // Keep contradictions clearly visible in red.
-        return "rgba(230, 90, 90, 1)";
-      }
-      // All non-contradiction edges are soft grey; brightness handled via globalAlpha.
-      return LINK_CITATION;
-    },
-    [useIntelligence]
-  );
-
   const drawLink = useCallback(
     (link: EnrichedLink & { source?: { x?: number; y?: number }; target?: { x?: number; y?: number } }, ctx: CanvasRenderingContext2D) => {
+      if (!_loggedCustomLinkRenderer) {
+        // eslint-disable-next-line no-console
+        console.log("Custom link renderer active");
+        _loggedCustomLinkRenderer = true;
+      }
       const src = link.source as { x?: number; y?: number } | undefined;
       const tgt = link.target as { x?: number; y?: number } | undefined;
       const x1 = src?.x ?? 0;
@@ -754,26 +578,16 @@ export default function GraphPage() {
       const x2 = tgt?.x ?? 0;
       const y2 = tgt?.y ?? 0;
       if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0) return;
-      const opacity = linkOpacity(link);
-      const isHighlight = opacity >= 0.8;
-      const w = linkWidth(link);
+
+      // Obsidian-style links: thin, muted, semi-transparent grey (20% opacity)
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
-      ctx.strokeStyle = linkColor(link);
-      ctx.lineWidth = w;
-      const prevAlpha = ctx.globalAlpha;
-      ctx.globalAlpha = opacity;
+      ctx.strokeStyle = "rgba(126, 116, 124, 0.2)"; // #7E747C @ 20% opacity
+      ctx.lineWidth = 1;
       ctx.stroke();
-      ctx.globalAlpha = prevAlpha;
-      if (isHighlight) {
-        ctx.shadowColor = "rgba(140, 200, 255, 0.5)";
-        ctx.shadowBlur = 8;
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-      }
     },
-    [linkOpacity, linkWidth, linkColor]
+    []
   );
 
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
@@ -800,7 +614,8 @@ export default function GraphPage() {
 
   if (loading) {
     return (
-      <div className="flex h-[calc(100vh-8rem)] items-center justify-center" style={{ background: BG }}>
+      <div className="flex h-[calc(100vh-8rem)] flex-col items-center justify-center gap-2" style={{ background: BG }}>
+        <p className="text-lg font-semibold text-foreground">HELLO VARAAD</p>
         <p className="text-muted-foreground">Loading graph...</p>
       </div>
     );
@@ -809,6 +624,9 @@ export default function GraphPage() {
   return (
     <div className="flex h-[calc(100vh-8rem)] w-full overflow-hidden" style={{ background: BG }}>
       <div ref={containerRef} className="relative flex-1 flex flex-col" style={{ background: BG }}>
+        <div className="absolute top-2 right-4 z-20 text-xs font-semibold text-foreground/80">
+          HELLO VARAAD
+        </div>
         <div className="absolute top-2 left-2 z-10 flex flex-wrap items-center gap-2">
           {useIntelligence && (
             <Button
@@ -898,17 +716,13 @@ export default function GraphPage() {
               width={dimensions.width}
               height={dimensions.height}
               nodeId="id"
-              nodeLabel={(n) => {
-                const label = (n as { label?: string }).label ?? "";
-                if (useIntelligence && "type" in n && (n as IntelligenceGraphNode).type === "paper" && paperHasUniqueConcept.has(n.id))
-                  return `${label}\nContains unique concept (Research Gap)`;
-                return label;
-              }}
               linkSource="source"
               linkTarget="target"
+              // Explicitly set white link color; nodeCanvasObject handles nodes.
+              linkColor={() => "#FFFFFF"}
               backgroundColor="transparent"
               nodeCanvasObject={drawNode}
-              nodeCanvasObjectMode="replace"
+              nodeCanvasObjectMode={() => "replace"}
               nodePointerAreaPaint={(node, color, ctx) => {
                 const n = node as NodeWithMeta;
                 const r = nodeRadius(n) + 6;
@@ -919,7 +733,7 @@ export default function GraphPage() {
                 ctx.fill();
               }}
               linkCanvasObject={drawLink}
-              linkCanvasObjectMode="replace"
+              linkCanvasObjectMode={() => "replace"}
               onNodeClick={(node, ev) => {
                 ev.preventDefault();
                 handleNodeClick(node as NodeWithMeta, ev as unknown as React.MouseEvent);
