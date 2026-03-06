@@ -4,7 +4,7 @@ import { useCallback, useMemo, useRef, useState, useEffect, useLayoutEffect } fr
 import dynamic from "next/dynamic";
 import { getGraphWorkspace, getGraphWorkspaceIntelligence } from "@/lib/api/graph";
 import { getPaper } from "@/lib/api/papers";
-import type { GraphNode, GraphLink, GraphData, IntelligenceGraphNode, IntelligenceGraphLink, IntelligenceGraphResponse } from "@/types/graph";
+import type { GraphNode, GraphLink, GraphData, IntelligenceGraphNode, IntelligenceGraphLink, IntelligenceGraphResponse, ContradictionEntry } from "@/types/graph";
 import type { Paper } from "@/types/paper";
 import { useWorkspace } from "@/store/workspaceStore";
 import { Button } from "@/components/ui/button";
@@ -98,6 +98,12 @@ function getClusterNodeIds(clusterId: number, nodes: NodeWithMeta[]): NodeWithMe
 type SelectedNode = NodeWithMeta | IntelligenceGraphNode | null;
 
 export default function GraphPage() {
+  // STEP 3 — Runtime proof: open DevTools Console and refresh. Must see this log.
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log("GRAPH COMPONENT MOUNTED");
+  }, []);
+
   const { activeWorkspace, loading: workspaceLoading } = useWorkspace();
   const [rawData, setRawData] = useState<GraphData | null>(null);
   const [intelligenceData, setIntelligenceData] = useState<IntelligenceGraphResponse | null>(null);
@@ -110,6 +116,8 @@ export default function GraphPage() {
   workspaceIdRef.current = activeWorkspace?.id ?? null;
   const [showClusters, setShowClusters] = useState(false);
   const [contradictionMode, setContradictionMode] = useState(false);
+  /** When user clicks a contradiction edge, show payload in right panel. */
+  const [selectedContradiction, setSelectedContradiction] = useState<IntelligenceGraphLink | null>(null);
   const [edgeTypeFilter, setEdgeTypeFilter] = useState<"all" | "citation" | "similarity" | "year_cluster">("all");
   const [similarityThreshold, setSimilarityThreshold] = useState<0.65 | 0.75>(0.65);
   const [rebuildingIntel, setRebuildingIntel] = useState(false);
@@ -130,6 +138,12 @@ export default function GraphPage() {
   const useIntelligence = Boolean(
     intelligenceData?.has_intelligence && intelligenceData?.nodes?.length > 0
   );
+
+  // STEP 8 — Debug: log when selectedContradiction changes (panel should open)
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log("[CONTRADICTION DEBUG] selectedContradiction state=", selectedContradiction);
+  }, [selectedContradiction]);
 
   // Debug: which graph mode is active
   useEffect(() => {
@@ -205,9 +219,18 @@ export default function GraphPage() {
 
   const filteredIntelligenceLinks = useMemo(() => {
     if (!intelligenceData?.links) return [];
+    // STEP 5 — Exact string "contradiction" (not "Contradiction" or "CONTRADICT")
     if (contradictionMode) return intelligenceData.links.filter((l) => l.type === "contradiction");
     return intelligenceData.links;
   }, [intelligenceData?.links, contradictionMode]);
+
+  // STEP 5 — Debug: when contradiction mode ON, log visible link count
+  useEffect(() => {
+    if (useIntelligence && contradictionMode) {
+      // eslint-disable-next-line no-console
+      console.log("[CONTRADICTION DEBUG] Contradiction mode ON: visible links=", filteredIntelligenceLinks.length, filteredIntelligenceLinks);
+    }
+  }, [useIntelligence, contradictionMode, filteredIntelligenceLinks]);
 
   const effectiveIntelligenceLinks = useMemo(() => {
     if (filteredIntelligenceLinks.length > 0) return filteredIntelligenceLinks;
@@ -299,6 +322,21 @@ export default function GraphPage() {
       setRawData(null);
       const intel = await getGraphWorkspaceIntelligence(requestWorkspaceId);
       if (workspaceIdRef.current !== requestWorkspaceId) return;
+
+      // STEP 4 — Verify frontend receives contradiction links from API
+      const links = intel?.links ?? [];
+      const contradictionLinks = links.filter((l: { type?: string }) => l.type === "contradiction");
+      // eslint-disable-next-line no-console
+      console.log("[CONTRADICTION DEBUG] After fetch: total links=", links.length, "contradiction links=", contradictionLinks.length, contradictionLinks);
+      if (links.length > 0 && contradictionLinks.length === 0) {
+        // eslint-disable-next-line no-console
+        console.warn("[CONTRADICTION DEBUG] API returned links but none with type 'contradiction'. Check backend.");
+      }
+
+      // STEP 9 — Frontend active workspace
+      // eslint-disable-next-line no-console
+      console.log("[CONTRADICTION DEBUG] Frontend request workspace_id=", requestWorkspaceId);
+
       const hasIntelNodes = Array.isArray(intel?.nodes) && intel.nodes.length > 0;
       if (intel?.has_intelligence && hasIntelNodes) {
         setIntelligenceData(intel);
@@ -338,28 +376,60 @@ export default function GraphPage() {
     loadGraph();
   }, [activeWorkspace?.id, workspaceLoading, loadGraph]);
 
+  // Force simulation tuning: compact, centered layout (no extreme scattering)
+  const CHARGE_STRENGTH = -45;
+  const LINK_DISTANCE_DEFAULT = 45;
+  const CENTER_STRENGTH = 0.6;
+
   useEffect(() => {
     if (!fgRef.current || !graphData.nodes.length) return;
     try {
       const charge = fgRef.current.d3Force("charge");
       if (charge && typeof charge.strength === "function") {
-        (charge as { strength: (v: number) => void }).strength(-300);
+        (charge as { strength: (v: number) => void }).strength(CHARGE_STRENGTH);
       }
       const link = fgRef.current.d3Force("link");
       if (link) {
-        if (typeof link.strength === "function") (link as { strength: (v: number) => void }).strength(0.6);
+        if (typeof link.strength === "function") (link as { strength: (v: number) => void }).strength(0.75);
         if (typeof link.distance === "function") {
-          link.distance((l: EnrichedLink) => (l.distance != null ? l.distance : 100));
+          link.distance((l: EnrichedLink) => (l.distance != null ? l.distance : LINK_DISTANCE_DEFAULT));
         }
       }
       const center = fgRef.current.d3Force("center");
       if (center && typeof center.strength === "function") {
-        (center as { strength: (v: number) => void }).strength(0.1);
+        (center as { strength: (v: number) => void }).strength(CENTER_STRENGTH);
       }
+      // Diagnostic: log force config
+      const nodeIds = new Set(graphData.nodes.map((n) => n.id));
+      const adj: Record<string, Set<string>> = {};
+      nodeIds.forEach((id) => (adj[id] = new Set()));
+      for (const l of graphData.links) {
+        const a = typeof l.source === "string" ? l.source : (l.source as { id?: string })?.id;
+        const b = typeof l.target === "string" ? l.target : (l.target as { id?: string })?.id;
+        if (a && b && nodeIds.has(a) && nodeIds.has(b)) {
+          adj[a].add(b);
+          adj[b].add(a);
+        }
+      }
+      let components = 0;
+      const seen = new Set<string>();
+      for (const id of nodeIds) {
+        if (seen.has(id)) continue;
+        components += 1;
+        const stack = [id];
+        while (stack.length) {
+          const u = stack.pop()!;
+          if (seen.has(u)) continue;
+          seen.add(u);
+          for (const v of adj[u]) stack.push(v);
+        }
+      }
+      // eslint-disable-next-line no-console
+      console.log("[GRAPH FORCE] charge strength:", CHARGE_STRENGTH, "| link distance:", LINK_DISTANCE_DEFAULT, "| center strength:", CENTER_STRENGTH, "| disconnected components:", components);
     } catch {
       // ignore
     }
-  }, [graphData.nodes.length]);
+  }, [graphData.nodes.length, graphData.links, graphData.nodes]);
 
   useEffect(() => {
     if (!selectedNode) {
@@ -386,11 +456,12 @@ export default function GraphPage() {
 
   const handleBackgroundClick = useCallback(() => {
     setSelectedNode(null);
+    setSelectedContradiction(null);
   }, []);
 
   const handleBackgroundDblClick = useCallback(() => {
     if (fgRef.current) {
-      fgRef.current.zoomToFit(400, 50);
+      fgRef.current.zoomToFit(400, 100);
     }
   }, []);
 
@@ -436,6 +507,7 @@ export default function GraphPage() {
           }
         }
       }
+      setSelectedContradiction(null);
       setSelectedNode(node);
       if (fgRef.current && (node as NodeWithMeta).x != null && (node as NodeWithMeta).y != null) {
         fgRef.current.centerAt((node as NodeWithMeta).x!, (node as NodeWithMeta).y!, 300);
@@ -565,29 +637,36 @@ export default function GraphPage() {
   }, [useIntelligence]);
 
   const drawLink = useCallback(
-    (link: EnrichedLink & { source?: { x?: number; y?: number }; target?: { x?: number; y?: number } }, ctx: CanvasRenderingContext2D) => {
+    (link: unknown, ctx: CanvasRenderingContext2D) => {
+      const L = link as { source?: { x?: number; y?: number }; target?: { x?: number; y?: number }; type?: string };
       if (!_loggedCustomLinkRenderer) {
         // eslint-disable-next-line no-console
         console.log("Custom link renderer active");
         _loggedCustomLinkRenderer = true;
       }
-      const src = link.source as { x?: number; y?: number } | undefined;
-      const tgt = link.target as { x?: number; y?: number } | undefined;
-      const x1 = src?.x ?? 0;
-      const y1 = src?.y ?? 0;
-      const x2 = tgt?.x ?? 0;
-      const y2 = tgt?.y ?? 0;
+      const x1 = L.source?.x ?? 0;
+      const y1 = L.source?.y ?? 0;
+      const x2 = L.target?.x ?? 0;
+      const y2 = L.target?.y ?? 0;
       if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0) return;
 
-      // Obsidian-style links: thin, muted, semi-transparent grey (20% opacity)
+      // STEP 6 — Contradiction links: forced thick red for debugging; log each draw
+      const isContradiction = useIntelligence && L.type === "contradiction";
+      if (isContradiction) {
+        // eslint-disable-next-line no-console
+        console.log("[CONTRADICTION DEBUG] Drawing contradiction link", L.source, "->", L.target);
+        ctx.strokeStyle = "rgba(255, 0, 0, 0.95)";
+        ctx.lineWidth = 8;
+      } else {
+        ctx.strokeStyle = "rgba(126, 116, 124, 0.2)";
+        ctx.lineWidth = 1;
+      }
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
-      ctx.strokeStyle = "rgba(126, 116, 124, 0.2)"; // #7E747C @ 20% opacity
-      ctx.lineWidth = 1;
       ctx.stroke();
     },
-    []
+    [useIntelligence]
   );
 
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
@@ -623,6 +702,10 @@ export default function GraphPage() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] w-full overflow-hidden" style={{ background: BG }}>
+      {/* STEP 2 — Visual breakpoint: if you see this, this file is the one rendering /graph */}
+      <div className="absolute top-0 left-0 right-0 z-[100] bg-red-600 text-white py-3 text-center text-xl font-bold shadow-lg">
+        GRAPH FILE ACTIVE
+      </div>
       <div ref={containerRef} className="relative flex-1 flex flex-col" style={{ background: BG }}>
         <div className="absolute top-2 right-4 z-20 text-xs font-semibold text-foreground/80">
           HELLO VARAAD
@@ -703,6 +786,12 @@ export default function GraphPage() {
           </div>
         ) : (
           <>
+            {/* When contradiction mode is ON but no contradiction edges exist */}
+            {useIntelligence && contradictionMode && graphData.links.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                <p className="text-muted-foreground">No contradiction data.</p>
+              </div>
+            )}
             {/* Subtle vignette instead of heavy noise, closer to Obsidian-style background */}
             <div
               className="absolute inset-0 pointer-events-none"
@@ -739,12 +828,29 @@ export default function GraphPage() {
                 handleNodeClick(node as NodeWithMeta, ev as unknown as React.MouseEvent);
               }}
               onNodeHover={(node) => setHoverNode(node as NodeWithMeta)}
+              onLinkClick={(link) => {
+                const l = link as IntelligenceGraphLink;
+                // STEP 7 — Verify link click handler receives contradiction links
+                if (l?.type === "contradiction") {
+                  // eslint-disable-next-line no-console
+                  console.log("[CONTRADICTION DEBUG] Clicked contradiction edge", l);
+                  setSelectedContradiction(l);
+                  setSelectedNode(null);
+                }
+              }}
               onBackgroundClick={handleBackgroundClick}
-              d3AlphaDecay={0.01}
-              d3VelocityDecay={0.2}
-              cooldownTicks={200}
+              d3AlphaDecay={0.02}
+              d3VelocityDecay={0.25}
+              cooldownTicks={300}
               onEngineStop={() => {
-                if (fgRef.current) fgRef.current.zoomToFit(400, 50);
+                // Auto-fit only after simulation stabilizes (no fit before engine ends)
+                setTimeout(() => {
+                  if (fgRef.current) {
+                    fgRef.current.zoomToFit(400, 100);
+                    // eslint-disable-next-line no-console
+                    console.log("[GRAPH FORCE] fitView triggered after stabilization (padding=100, duration=400ms)");
+                  }
+                }, 80);
               }}
             />
           </>
@@ -789,11 +895,46 @@ export default function GraphPage() {
         </>
       )}
 
-      {selectedNode && (
+      {(selectedContradiction || selectedNode) && (
         <aside className="w-[360px] shrink-0 border-l border-border bg-card p-4 overflow-y-auto shadow-xl animate-in slide-in-from-right duration-200">
           <div className="space-y-3">
-            <h3 className="font-semibold text-foreground line-clamp-2">{selectedNode.label}</h3>
-            {useIntelligence && "type" in selectedNode && (selectedNode as IntelligenceGraphNode).type === "concept" ? (
+            {selectedContradiction ? (
+              <>
+                <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide">Contradictions detected</h2>
+                <p className="text-sm text-foreground">
+                  <strong>
+                    {graphData.nodes.find((n) => n.id === selectedContradiction.source)?.label ?? selectedContradiction.source}
+                  </strong>
+                  {" vs "}
+                  <strong>
+                    {graphData.nodes.find((n) => n.id === selectedContradiction.target)?.label ?? selectedContradiction.target}
+                  </strong>
+                </p>
+                {selectedContradiction.contradictions && selectedContradiction.contradictions.length > 0 ? (
+                  <div className="space-y-4">
+                    {selectedContradiction.contradictions.map((item: ContradictionEntry, index: number) => (
+                      <div key={index} className="rounded border border-border bg-muted/30 p-3 text-sm">
+                        <h4 className="font-medium text-foreground mb-1.5">Contradiction {index + 1}</h4>
+                        <p className="text-muted-foreground mb-1"><strong>Claim:</strong> {item.claim}</p>
+                        {item.paperA_statement != null && item.paperA_statement !== "" && (
+                          <p className="text-foreground mb-1"><strong>Paper A (support):</strong> {item.paperA_statement}</p>
+                        )}
+                        {item.paperB_statement != null && item.paperB_statement !== "" && (
+                          <p className="text-foreground"><strong>Paper B (contradict):</strong> {item.paperB_statement}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    These papers do not have structured contradiction evidence yet. Run claim verification.
+                  </p>
+                )}
+              </>
+            ) : selectedNode ? (
+              <>
+                <h3 className="font-semibold text-foreground line-clamp-2">{selectedNode.label}</h3>
+                {useIntelligence && "type" in selectedNode && (selectedNode as IntelligenceGraphNode).type === "concept" ? (
               <>
                 {(selectedNode as IntelligenceGraphNode).is_research_gap && (
                   <div className="rounded-md bg-red-500/10 border border-red-500/30 px-2 py-1.5 text-sm text-red-400">
@@ -880,6 +1021,8 @@ export default function GraphPage() {
             ) : (
               <p className="text-sm text-muted-foreground">Loading paper details…</p>
             )}
+              </>
+            ) : null}
           </div>
         </aside>
       )}

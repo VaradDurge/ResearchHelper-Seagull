@@ -23,14 +23,21 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 MAX_NODES = 500
-# Temporarily 0 to verify connections; revert to 0.5 / 0.25 when asked
-SIMILARITY_THRESHOLD_INITIAL = 0.0
-SIMILARITY_THRESHOLD_MIN = 0.0
-KEYWORD_OVERLAP_MIN = 1
+# Strict semantic standard: only connect when similarity > 0.70 (no lowering)
+SIMILARITY_THRESHOLD = 0.70
+KEYWORD_OVERLAP_MIN = 3  # Meaningful keyword overlap >= 3 (after stopword filter)
 MIN_METHOD_EDGES = 1
 MIN_CONCEPT_EDGES = 2
 MIN_PAPER_PAPER_EDGES = 1
 MIN_TITLE_WORD_LEN = 4
+
+# Academic / generic words that must not count toward keyword overlap (semantic rigor)
+_ACADEMIC_STOPWORDS = frozenset({
+    "development", "application", "analysis", "research", "learning", "system", "method",
+    "based", "using", "approach", "study", "results", "data", "model", "models",
+    "paper", "work", "different", "various", "general", "new", "high", "large",
+    "used", "use", "used", "however", "also", "different", "important", "significant",
+})
 
 
 def _year_from_paper(doc: dict) -> Optional[int]:
@@ -57,17 +64,57 @@ def _normalize_label(s: str) -> str:
 
 
 def _title_to_keywords(title: str) -> Set[str]:
-    """Extract significant words from paper title for thematic overlap (e.g. 'neural network')."""
+    """Extract significant words from paper title; exclude academic stopwords."""
     if not title or not title.strip():
         return set()
     words = re.findall(r"[a-zA-Z0-9]+", title.lower())
-    return {w for w in words if len(w) >= MIN_TITLE_WORD_LEN}
+    return {w for w in words if len(w) >= MIN_TITLE_WORD_LEN and w not in _ACADEMIC_STOPWORDS}
+
+
+def _meaningful_keywords(keywords: List[str], title: str) -> Set[str]:
+    """Union of intel keywords and title-derived keywords, minus academic stopwords."""
+    out: Set[str] = set()
+    for k in keywords or []:
+        n = _normalize_label(k)
+        if n and n not in _ACADEMIC_STOPWORDS:
+            out.add(n)
+    out |= _title_to_keywords(title or "")
+    return out
 
 
 def _get_contradiction_edges(workspace_id: str, paper_ids: Set[str]) -> List[Tuple[str, str]]:
-    """From claim_verifications, find paper pairs (support, contradict) for contradiction edges."""
+    """
+    From claim_verifications, find paper pairs (support, contradict) for contradiction edges.
+    Edges only exist when the SAME claim verification run has both SUPPORT and CONTRADICT
+    classifications (different papers). No CONTRADICT evidence → no red lines.
+    """
     coll = get_claim_verifications_collection()
-    cursor = coll.find({"workspace_id": workspace_id}).sort("created_at", -1).limit(200)
+    cursor = list(coll.find({"workspace_id": workspace_id}).sort("created_at", -1).limit(200))
+
+    # STEP 1 — Verify claim verification data exists
+    total_docs = len(cursor)
+    with_contradict = sum(1 for doc in cursor if (doc.get("result") or {}).get("contradict_count", 0) > 0)
+    logger.info(
+        "[CONTRADICTION DEBUG] workspace_id=%s | claim_verifications total=%s | with contradict_count>0=%s",
+        workspace_id,
+        total_docs,
+        with_contradict,
+    )
+    if total_docs == 0:
+        logger.warning(
+            "[CONTRADICTION DEBUG] No claim_verifications for workspace_id=%s. "
+            "No structured contradiction evidence exists yet. Run claim verification.",
+            workspace_id,
+        )
+        return []
+    if with_contradict == 0:
+        logger.warning(
+            "[CONTRADICTION DEBUG] All %s claim_verifications have contradict_count=0. "
+            "Need at least one run with both SUPPORT and CONTRADICT evidence.",
+            total_docs,
+        )
+        return []
+
     pairs: List[Tuple[str, str]] = []
     seen = set()
     for doc in cursor:
@@ -91,6 +138,13 @@ def _get_contradiction_edges(workspace_id: str, paper_ids: Set[str]) -> List[Tup
                 support_ids.add(pid)
             elif "CONTRADICT" in label:
                 contradict_ids.add(pid)
+
+        # STEP 2 — Log per verification
+        logger.info(
+            "[CONTRADICTION DEBUG] verification support_ids=%s contradict_ids=%s",
+            sorted(support_ids),
+            sorted(contradict_ids),
+        )
         for pa in support_ids:
             for pb in contradict_ids:
                 if pa == pb:
@@ -99,6 +153,9 @@ def _get_contradiction_edges(workspace_id: str, paper_ids: Set[str]) -> List[Tup
                 if key not in seen:
                     seen.add(key)
                     pairs.append((pa, pb))
+                    logger.info("[CONTRADICTION DEBUG] Creating contradiction edge between %s and %s", pa, pb)
+
+    logger.info("[CONTRADICTION DEBUG] Total contradiction edges generated=%s", len(pairs))
     return pairs
 
 
@@ -112,6 +169,9 @@ def build_workspace_graph(
     Returns (nodes, links, has_intelligence).
     has_intelligence False when no paper_intelligence data exists (frontend can fall back to simple graph).
     """
+    # STEP 9 — Workspace consistency: papers and claim_verifications must use same workspace_id
+    logger.info("[CONTRADICTION DEBUG] build_workspace_graph workspace_id=%s", workspace_id)
+
     papers_coll = get_papers_collection()
     docs = list(
         papers_coll.find({"workspace_id": workspace_id}).sort("upload_date", -1).limit(cap_nodes)
@@ -249,38 +309,29 @@ def build_workspace_graph(
         if n.type == "concept" and (n.paper_count or 0) == 1:
             n.is_research_gap = True
 
-    # Paper–paper similarity (stored embeddings)
+    # Paper–paper similarity (stored embeddings). Strict: only connect if similarity > 0.70.
     vecs: Dict[str, List[float]] = {}
     for pid, intel in intel_by_paper.items():
         ev = intel.get("embedding_vector")
         if ev and isinstance(ev, list) and len(ev) > 0:
             vecs[pid] = ev
     pid_list = [p for p in papers if p["id"] in vecs]
-    threshold = SIMILARITY_THRESHOLD_INITIAL
     similarity_added = 0
-    for _ in range(5):
-        added = 0
-        for i, pa in enumerate(pid_list):
-            for pb in pid_list[i + 1 :]:
-                if pa["id"] == pb["id"]:
-                    continue
-                sim = _cosine_similarity(vecs[pa["id"]], vecs[pb["id"]])
-                if sim >= threshold:
-                    key = (pa["id"], pb["id"], "similarity")
-                    if key not in link_set:
-                        link_set.add(key)
-                        links.append(
-                            IntelligenceGraphLink(
-                                source=pa["id"], target=pb["id"], type="similarity", weight=round(sim, 4)
-                            )
+    for i, pa in enumerate(pid_list):
+        for pb in pid_list[i + 1 :]:
+            if pa["id"] == pb["id"]:
+                continue
+            sim = _cosine_similarity(vecs[pa["id"]], vecs[pb["id"]])
+            if sim >= SIMILARITY_THRESHOLD:
+                key = (pa["id"], pb["id"], "similarity")
+                if key not in link_set:
+                    link_set.add(key)
+                    links.append(
+                        IntelligenceGraphLink(
+                            source=pa["id"], target=pb["id"], type="similarity", weight=round(sim, 4)
                         )
-                        added += 1
-                        similarity_added += 1
-        if added >= 1:
-            break
-        threshold -= 0.05
-        if threshold < SIMILARITY_THRESHOLD_MIN:
-            break
+                    )
+                    similarity_added += 1
     logger.info(
         "Graph intelligence: workspace_id=%s papers=%s with_embedding=%s similarity_edges=%s",
         workspace_id,
@@ -289,14 +340,12 @@ def build_workspace_graph(
         similarity_added,
     )
 
-    # Paper–paper keyword overlap (>= KEYWORD_OVERLAP_MIN); include title-derived keywords
+    # Paper–paper keyword overlap: meaningful keywords only, >= 3 (semantic standard)
     kw_by_paper: Dict[str, Set[str]] = {}
     for p in papers:
         pid = p["id"]
         intel = intel_by_paper.get(pid) or {}
-        kws = {_normalize_label(k) for k in (intel.get("keywords") or []) if _normalize_label(k)}
-        kws |= _title_to_keywords(p.get("title") or "")
-        kw_by_paper[pid] = kws
+        kw_by_paper[pid] = _meaningful_keywords(intel.get("keywords"), p.get("title") or "")
     for i, pa in enumerate(papers):
         for pb in papers[i + 1 :]:
             if pa["id"] == pb["id"]:
@@ -335,45 +384,7 @@ def build_workspace_graph(
             link_set.add((pa, pb, "contradiction"))
             links.append(IntelligenceGraphLink(source=pa, target=pb, type="contradiction", weight=1.0))
 
-    # Guarantee: every paper has at least one paper–paper link when we have 2+ papers
-    paper_paper_link_types = {"similarity", "keyword_overlap", "citation", "contradiction"}
-    paper_to_neighbors: Dict[str, Set[str]] = {p["id"]: set() for p in papers}
-    for link in links:
-        if link.type in paper_paper_link_types:
-            a, b = link.source, link.target
-            if a in paper_to_neighbors and b in paper_to_neighbors:
-                paper_to_neighbors[a].add(b)
-                paper_to_neighbors[b].add(a)
-    if len(papers) >= 2:
-        for p in papers:
-            pid = p["id"]
-            if paper_to_neighbors[pid]:
-                continue
-            # Link to best candidate: highest similarity in vecs, or first other paper
-            best_id: Optional[str] = None
-            best_sim = -1.0
-            for other in papers:
-                if other["id"] == pid:
-                    continue
-                oid = other["id"]
-                if pid in vecs and oid in vecs:
-                    s = _cosine_similarity(vecs[pid], vecs[oid])
-                    if s > best_sim:
-                        best_sim = s
-                        best_id = oid
-                elif best_id is None:
-                    best_id = oid
-            if best_id and (pid, best_id, "keyword_overlap") not in link_set and (best_id, pid, "keyword_overlap") not in link_set:
-                link_set.add((pid, best_id, "keyword_overlap"))
-                links.append(
-                    IntelligenceGraphLink(
-                        source=pid,
-                        target=best_id,
-                        type="keyword_overlap",
-                        weight=0.4,
-                    )
-                )
-    logger.info("Graph intelligence: after guarantee total_links=%s", len(links))
+    # No forced density: isolated nodes remain isolated (semantic truth over visual completeness).
 
     # Dense guarantee: ensure each paper has at least MIN_METHOD_EDGES, MIN_CONCEPT_EDGES, MIN_PAPER_PAPER_EDGES
     paper_degree: Dict[str, Set[str]] = {p["id"]: set() for p in papers}

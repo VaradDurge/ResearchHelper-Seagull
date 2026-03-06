@@ -40,6 +40,9 @@ async def get_graph_workspace_intelligence(
     Returns Research Intelligence Graph: paper/method/dataset/concept nodes and edges.
     If no paper_intelligence data exists, returns has_intelligence=false so frontend can fall back to simple graph.
     """
+    # STEP 9 — Workspace consistency: same workspace_id used for graph build
+    logger.info("[CONTRADICTION DEBUG] API workspace_id=%s (user_id=%s)", workspace_id, user_id)
+
     nodes, links, has_intelligence = build_workspace_graph(
         workspace_id=workspace_id, user_id=user_id
     )
@@ -49,6 +52,20 @@ async def get_graph_workspace_intelligence(
             workspace_id,
             user_id,
         )
+
+    # STEP 3 — Verify API response before return
+    total_links = len(links)
+    contradiction_links = [l for l in links if l.type == "contradiction"]
+    contradiction_count = len(contradiction_links)
+    logger.info(
+        "[CONTRADICTION DEBUG] API response: total_nodes=%s total_links=%s contradiction_links=%s",
+        len(nodes),
+        total_links,
+        contradiction_count,
+    )
+    if contradiction_count == 0 and total_links > 0:
+        logger.info("[CONTRADICTION DEBUG] No contradiction links in response. Frontend cannot show red lines.")
+
     return IntelligenceGraphResponse(
         nodes=nodes,
         links=links,

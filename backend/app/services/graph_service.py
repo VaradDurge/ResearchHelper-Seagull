@@ -16,8 +16,8 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 MAX_NODES = 500
-# Temporarily 0 to verify connections; revert to 0.75 when asked
-SIMILARITY_THRESHOLD = 0.0
+# Strict semantic standard: only connect when similarity > 0.70 (no fallback clique)
+SIMILARITY_THRESHOLD = 0.70
 
 
 def _year_from_date(publication_date: str) -> int | None:
@@ -227,11 +227,5 @@ def build_graph(
         len(paper_ids_with_vectors),
         similarity_count,
     )
-    if len(nodes) >= 2 and len(links) == 0:
-        for i, pa in enumerate(papers):
-            for pb in papers[i + 1 :]:
-                if (pa["id"], pb["id"], "similarity") not in link_set and (pb["id"], pa["id"], "similarity") not in link_set:
-                    link_set.add((pa["id"], pb["id"], "similarity"))
-                    links.append(GraphLink(source=pa["id"], target=pb["id"], type="similarity", weight=0.7))
-        logger.info("Graph simple: added fallback paper-paper links (no centroids/similarity), total=%s", len(links))
+    # No fallback: isolated nodes remain isolated (semantic truth over visual completeness).
     return nodes, links

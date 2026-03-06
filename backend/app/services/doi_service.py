@@ -7,19 +7,21 @@ PDF download priority:
   3. arXiv direct link  (if landing URL points to arxiv.org)
   4. Metadata pdf_url from Crossref / OpenAlex  (last resort)
 """
-from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from typing import List, Optional, Tuple, Dict, Any
+
+import httpx
 import logging
 import os
 import re
 import uuid
-from urllib.parse import urlparse
-
-import httpx
 
 from app.config import settings
+from app.db.mongo import get_papers_collection
+from app.models.schemas import DoiLookupResult, PaperResponse, PaperStatus
 from app.services.ingestion_service import ingest_pdf
-from app.utils.doi_fetcher import fetch_doi_metadata, normalize_doi
-from app.models.schemas import DoiLookupResult, PaperResponse
+from app.utils.doi_fetcher import fetch_doi_metadata, fetch_doi_metadata_first, normalize_doi
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +38,7 @@ _HEADERS = {
 _REQ_TIMEOUT = 20
 
 
-# ── Lookup (unchanged) ───────────────────────────────────────────────────
+# ── Lookup (parallel: display first source that returns) ──────────────────
 
 def lookup_dois(dois: List[str], max_items: int = 5) -> List[DoiLookupResult]:
     unique_dois: List[str] = []
@@ -51,7 +53,7 @@ def lookup_dois(dois: List[str], max_items: int = 5) -> List[DoiLookupResult]:
             break
     results: List[DoiLookupResult] = []
     for doi in unique_dois:
-        data = fetch_doi_metadata(doi)
+        data = fetch_doi_metadata_first(doi)
         results.append(DoiLookupResult(**data))
     return results
 
@@ -144,7 +146,216 @@ def _arxiv_url(landing_url: Optional[str]) -> Optional[str]:
     return None
 
 
-# ── Main import ──────────────────────────────────────────────────────────
+def _build_pdf_candidates_parallel(doi: str, metadata: Dict[str, Any]) -> List[str]:
+    """Build candidate PDF URL list with Unpaywall and Semantic Scholar in parallel."""
+    landing_url = metadata.get("url")
+    meta_pdf = metadata.get("pdf_url")
+    candidates: List[str] = []
+    unpaywall_urls: List[str] = []
+    s2_urls: List[str] = []
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        fut_uw = executor.submit(_unpaywall_urls, doi)
+        fut_s2 = executor.submit(_semantic_scholar_urls, doi)
+        try:
+            unpaywall_urls = fut_uw.result()
+        except Exception:
+            pass
+        try:
+            s2_urls = fut_s2.result()
+        except Exception:
+            pass
+
+    candidates.extend(unpaywall_urls)
+    candidates.extend(s2_urls)
+    arxiv = _arxiv_url(landing_url)
+    if arxiv:
+        candidates.append(arxiv)
+    if meta_pdf:
+        candidates.append(meta_pdf)
+
+    seen: set[str] = set()
+    unique: List[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
+def _download_pdf_parallel(candidates: List[str], max_workers: int = 4) -> Tuple[Optional[bytes], Optional[str]]:
+    """Try candidate URLs in parallel; return (pdf_bytes, None) on first success or (None, error_msg)."""
+    if not candidates:
+        return None, "No candidate URLs"
+
+    def try_one(url: str) -> Optional[bytes]:
+        try:
+            with httpx.Client(timeout=_REQ_TIMEOUT) as client:
+                resp = _get(client, url)
+                if resp and _is_pdf(resp):
+                    return resp.content
+        except Exception:
+            pass
+        return None
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(candidates))) as executor:
+        futures = {executor.submit(try_one, url): url for url in candidates[:max_workers * 2]}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                return result, None
+
+    return None, (
+        "Could not download an open-access PDF from any known source. "
+        "The paper may be behind a paywall or require browser access."
+    )
+
+
+def _get_existing_paper_by_doi(workspace_id: str, doi: str) -> Optional[PaperResponse]:
+    """Return existing paper for this DOI in the workspace if any."""
+    try:
+        papers = get_papers_collection()
+        doc = papers.find_one({"workspace_id": workspace_id, "doi": doi})
+        if not doc:
+            return None
+        return PaperResponse(
+            id=doc["paper_id"],
+            title=doc.get("title", ""),
+            authors=doc.get("authors", []),
+            abstract=doc.get("abstract"),
+            doi=doc.get("doi"),
+            publication_date=doc.get("publication_date"),
+            pdf_path=doc.get("pdf_path"),
+            pdf_url=doc.get("pdf_url"),
+            upload_date=doc["upload_date"],
+            workspace_id=doc["workspace_id"],
+            user_id=doc["user_id"],
+            status=PaperStatus(doc["status"]),
+            metadata=doc.get("metadata"),
+        )
+    except Exception:
+        return None
+
+
+def import_doi_fast(
+    doi: str,
+    workspace_id: str,
+    user_id: str,
+) -> Tuple[PaperResponse, Optional[Dict[str, Any]]]:
+    """
+    Resolve DOI metadata and PDF URL candidates, return a PROCESSING paper and payload for background ingest.
+    If the DOI already exists in the workspace, return that paper and payload=None (no background job).
+    """
+    normalized = normalize_doi(doi)
+    if not normalized:
+        raise ValueError("Invalid DOI")
+
+    cached = _get_existing_paper_by_doi(workspace_id, normalized)
+    if cached is not None:
+        return cached, None
+
+    metadata = fetch_doi_metadata(normalized)
+    if metadata.get("error"):
+        raise ValueError(metadata["error"])
+
+    candidates = _build_pdf_candidates_parallel(normalized, metadata)
+    if not candidates:
+        raise ValueError(
+            "No open-access PDF found for this DOI. "
+            "The paper may not be available as open access."
+        )
+
+    log.info("DOI %s – %d candidate PDF URLs (fast path)", normalized, len(candidates))
+
+    paper_id = str(uuid.uuid4())
+    title = metadata.get("title") or normalized
+    original_filename = f"{_safe_filename(title)}.pdf"
+
+    paper = PaperResponse(
+        id=paper_id,
+        title=title,
+        authors=metadata.get("authors") or [],
+        abstract=metadata.get("abstract"),
+        doi=normalized,
+        publication_date=metadata.get("publication_date"),
+        pdf_path=None,
+        pdf_url=metadata.get("url"),
+        upload_date=datetime.now(timezone.utc),
+        workspace_id=workspace_id,
+        user_id=user_id,
+        status=PaperStatus.PROCESSING,
+        metadata={
+            "original_filename": original_filename,
+            "doi": normalized,
+        },
+    )
+    if metadata.get("publication_date"):
+        paper.metadata["publication_date"] = metadata["publication_date"]
+
+    payload: Dict[str, Any] = {
+        "paper_id": paper_id,
+        "candidates": candidates,
+        "metadata": metadata,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "normalized_doi": normalized,
+        "original_filename": original_filename,
+    }
+    return paper, payload
+
+
+def run_doi_background_task(payload: Dict[str, Any]) -> Tuple[Optional[PaperResponse], Optional[Exception]]:
+    """
+    Download PDF from candidates (parallel), save to file, run ingest_pdf.
+    Returns (PaperResponse, None) on success or (None, exception) on failure.
+    """
+    paper_id = payload["paper_id"]
+    candidates = payload["candidates"]
+    metadata = payload["metadata"]
+    workspace_id = payload["workspace_id"]
+    user_id = payload["user_id"]
+    normalized_doi = payload["normalized_doi"]
+    original_filename = payload["original_filename"]
+
+    pdf_bytes, err_msg = _download_pdf_parallel(candidates)
+    if pdf_bytes is None:
+        return None, ValueError(err_msg or "Download failed")
+
+    if len(pdf_bytes) > settings.max_upload_size:
+        return None, ValueError("Downloaded PDF exceeds maximum allowed size")
+
+    os.makedirs(settings.upload_dir, exist_ok=True)
+    file_path = os.path.join(settings.upload_dir, f"{paper_id}.pdf")
+    try:
+        with open(file_path, "wb") as f:
+            f.write(pdf_bytes)
+    except Exception as exc:
+        return None, exc
+
+    paper_metadata = {"doi": normalized_doi}
+    if metadata.get("publication_date"):
+        paper_metadata["publication_date"] = metadata["publication_date"]
+
+    try:
+        paper = ingest_pdf(
+            pdf_path=file_path,
+            paper_id=paper_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            original_filename=original_filename,
+            paper_metadata=paper_metadata,
+        )
+        return paper, None
+    except Exception as exc:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+        return None, exc
+
+
+# ── Main import (synchronous, kept for compatibility) ─────────────────────
 
 def import_doi(
     doi: str,

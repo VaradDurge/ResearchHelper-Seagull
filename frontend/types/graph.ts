@@ -61,11 +61,20 @@ export type IntelligenceLinkType =
   | "uses_dataset"
   | "has_concept";
 
+export interface ContradictionEntry {
+  claim: string;
+  paperA_statement?: string;
+  paperB_statement?: string;
+  paperA_page?: number;
+  paperB_page?: number;
+}
+
 export interface IntelligenceGraphLink {
   source: string;
   target: string;
   type: IntelligenceLinkType;
   weight?: number;
+  contradictions?: ContradictionEntry[];
 }
 
 export interface IntelligenceGraphResponse {
